@@ -397,15 +397,34 @@ void plat_present_565(const uint16_t *px, int w, int h, int pitch_px)
     }
     cur ^= 1;
     uint16_t *base = bm[cur].data;
-    /* fast path: exact double (NES 256x240 -> 512x480), no table */
-    if (w * 2 <= res[0] && h * 2 <= res[1]) {
-        int dx = (res[0] - w * 2) / 2, dy = (res[1] - h * 2) / 2;
-        if (ex != dx) { ex = dx; memset(bm[0].data, 0, res[0] * res[1] * 2); memset(bm[1].data, 0, res[0] * res[1] * 2); }
+    /* fast path: integer scale, no table. NES/SNES/MD/SMS at 2x; GBA (240x160) and GB (160x144) at 3x
+     * (the GBA fills the 720x480 exactly). Writes 2 pixels at a time (uint32) and copies the line to the other k-1. */
+    int k = res[0] / w < res[1] / h ? res[0] / w : res[1] / h;
+    if (k > 4) k = 4;
+    if (k >= 2 && !(w & 1)) {
+        static int last_k, last_dx, last_dy;
+        int dx = ((res[0] - w * k) / 2) & ~1, dy = (res[1] - h * k) / 2;
+        if (k != last_k || dx != last_dx || dy != last_dy) {
+            last_k = k; last_dx = dx; last_dy = dy;
+            memset(bm[0].data, 0, res[0] * res[1] * 2);
+            memset(bm[1].data, 0, res[0] * res[1] * 2);
+        }
         for (int y = 0; y < h; y++) {
             const uint16_t *src = px + y * pitch_px;
-            uint32_t *d = (uint32_t *)(base + (dy + y * 2) * res[0] + dx);
-            for (int x = 0; x < w; x++) { uint32_t c = src[x]; d[x] = c | (c << 16); }
-            memcpy(d + res[0] / 2, d, w * 4);
+            uint32_t *d = (uint32_t *)(base + (dy + y * k) * res[0] + dx);
+            if (k == 2) {
+                for (int x = 0; x < w; x++) { uint32_t c = src[x]; d[x] = c | (c << 16); }
+            } else if (k == 3) {
+                for (int x = 0; x < w; x += 2) {
+                    uint32_t a = src[x], b = src[x + 1];
+                    d[0] = a | a << 16; d[1] = a | b << 16; d[2] = b | b << 16;
+                    d += 3;
+                }
+                d = (uint32_t *)(base + (dy + y * k) * res[0] + dx);
+            } else {
+                for (int x = 0; x < w; x++) { uint32_t c = src[x] | (uint32_t)src[x] << 16; d[x * 2] = c; d[x * 2 + 1] = c; }
+            }
+            for (int r = 1; r < k; r++) memcpy(base + (dy + y * k + r) * res[0] + dx, d, w * k * 2);
         }
         goto flip;
     }
@@ -461,7 +480,7 @@ int plat_pacing(void) { return disp >= 0 && vsync ? PACE_VIDEO : PACE_CLOCK; }
  * far too coarse to pace frames. Non-blocking mode can only be enabled with SNDCTL_DSP_NONBLOCK (the
  * driver ignores O_NONBLOCK on open). The TV retrace holds the pacing; the runner adjusts the audio
  * rate from the queue (SNDCTL_DSP_GETODELAY). */
-static int dsp = -1;
+static int dsp = -1, dsp_rate;
 
 int plat_audio_init(int rate)
 {
@@ -473,6 +492,7 @@ int plat_audio_init(int rate)
     ioctl(dsp, SNDCTL_DSP_CHANNELS, &ch);
     ioctl(dsp, SNDCTL_DSP_SPEED, &t);
     step("audio: requested rate %d, accepted %d", rate, t);
+    dsp_rate = t;
     audio_buf_info bi;
     if (!ioctl(dsp, SNDCTL_DSP_GETOSPACE, &bi)) step("audio: %d fragments of %d bytes", bi.fragstotal, bi.fragsize);
     if (ioctl(dsp, SNDCTL_DSP_NONBLOCK, 0)) step("audio: SNDCTL_DSP_NONBLOCK failed", 0, 0);
@@ -487,6 +507,7 @@ int plat_audio(const int16_t *s, int n)
     return r / 4;
 }
 
+int plat_audio_rate(void) { return dsp >= 0 ? dsp_rate : 0; }
 void plat_audio_close(void) { if (dsp >= 0) close(dsp); dsp = -1; }
 
 int plat_audio_queue(void)

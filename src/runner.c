@@ -83,18 +83,19 @@ static size_t batch(const int16_t *s, size_t n)
 #define QUEUE_TARGET 2000 /* audio frames (~42 ms at 48 kHz); settles slightly below (proportional control) */
 #define DRC_MAX 0.008
 static uint32_t phase; /* fractional position (16.16) inside the batch, carried between frames */
+static double base_ratio = 1.0; /* device rate / core rate */
 static int rate_control, underruns, dropped, queue_sum, queue_count;
 static double ratio_sum;
 
 static void send_audio(void)
 {
-    static int16_t out[(AUDIO_MAX * 11 / 10 + 8) * 2];
+    static int16_t out[(AUDIO_MAX * 2 + 8) * 2];
     static int first = 1;
     int n = naudio;
     naudio = 0;
     if (!audio_ok || !n) return;
     uint32_t t = plat_ms();
-    double ratio = 1.0; /* output frames per input frame */
+    double ratio = base_ratio; /* output frames per input frame */
     if (rate_control) {
         int queue = plat_audio_queue();
         if (queue >= 0) {
@@ -109,7 +110,7 @@ static void send_audio(void)
             double err = (double)(QUEUE_TARGET - queue) / QUEUE_TARGET;
             if (err > 1) err = 1;
             if (err < -1) err = -1;
-            ratio = 1.0 + DRC_MAX * err;
+            ratio = base_ratio * (1.0 + DRC_MAX * err);
             queue_sum += queue; queue_count++; ratio_sum += ratio;
         }
     }
@@ -201,16 +202,26 @@ int main(int argc, char **argv)
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
     fseek(f, 0, SEEK_SET);
-    void *data = malloc(size);
-    if (fread(data, 1, size, f) != (size_t)size) { fclose(f); return 1; }
+    /* core that reads by path (gpsp pages the ROM): does not load the whole file into the stick's 55 MB */
+    struct retro_system_info si;
+    retro_get_system_info(&si);
+    void *data = NULL;
+    if (si.need_fullpath) size = 0;
+    else {
+        data = malloc(size);
+        if (!data || fread(data, 1, size, f) != (size_t)size) { fclose(f); return 1; }
+    }
     fclose(f);
+    plat_log("game: rom loaded in memory (bytes) %d", (int)size);
     struct retro_game_info game = {argv[1], data, (size_t)size, NULL};
     if (!retro_load_game(&game)) { fprintf(stderr, "core refused the game\n"); return 1; }
     sram(argv[1], 0);
 
     struct retro_system_av_info av;
     retro_get_system_av_info(&av);
-    audio_ok = !plat_audio_init((int)av.timing.sample_rate);
+    /* the device always opens at 48 kHz; core audio is converted (gambatte, gpsp etc. have their own rates) */
+    audio_ok = !plat_audio_init(48000);
+    if (audio_ok && plat_audio_rate() > 0) base_ratio = (double)plat_audio_rate() / av.timing.sample_rate;
     plat_log("game: audio %d", audio_ok);
     plat_log("game: sample rate %d", (int)av.timing.sample_rate);
 

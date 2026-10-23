@@ -44,8 +44,36 @@ out/pc/libfceumm.a:
 out/arm/libfceumm.a:
 	$(MAKE) -f cores/fceumm.mk ARCH=arm -j8
 
-pc: out/menu-pc out/nes-pc
-arm: out/menu-arm out/nes-arm
+# Other systems: the same runner (runner.c) linked to the core of each one.
+EMU_snes := snes9x2002
+EMU_md := picodrive
+EMU_sms := picodrive
+EMU_gba := gpsp
+EMU_gb := gambatte
+SYSTEMS := snes md sms gba gb
+
+.SECONDEXPANSION:
+out/%-arm: src/runner.c src/plat_stick.c src/*.h out/arm/lib$$(EMU_$$*).a
+	$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c src/runner.c -o out/arm/runner.o
+	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/plat_stick.c -o out/arm/plat_stick.o
+	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/lib$(EMU_$*).a -o $@ -lm
+
+out/%-pc: src/runner.c src/plat_sdl.c src/*.h out/pc/lib$$(EMU_$$*).a
+	c++ -x c $(CFLAGS) $(LRINC) -c src/runner.c -o out/pc/runner.o
+	c++ -x c $(CFLAGS) $$(sdl2-config --cflags) -c src/plat_sdl.c -o out/pc/plat_sdl.o
+	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/lib$(EMU_$*).a -o $@ $$(sdl2-config --libs) -lm -lz
+
+out/arm/libpicodrive.a:
+	$(MAKE) -f cores/picodrive.mk ARCH=arm
+out/pc/libpicodrive.a:
+	$(MAKE) -f cores/picodrive.mk ARCH=pc
+out/arm/lib%.a:
+	$(MAKE) -f cores/core.mk EMU_CORE=$* ARCH=arm -j8
+out/pc/lib%.a:
+	$(MAKE) -f cores/core.mk EMU_CORE=$* ARCH=pc -j8
+
+pc: out/menu-pc out/nes-pc $(SYSTEMS:%=out/%-pc)
+arm: out/menu-arm out/nes-arm $(SYSTEMS:%=out/%-arm)
 
 run: pc
 	./out/menu-pc

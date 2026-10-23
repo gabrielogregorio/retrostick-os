@@ -4,6 +4,7 @@
 #include <SDL2/SDL.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "plat.h"
 
 static SDL_Window *win;
@@ -132,7 +133,7 @@ int plat_audio_init(int rate)
     q.freq = rate; q.format = AUDIO_S16SYS; q.channels = 2; q.samples = 1024;
     aud = SDL_OpenAudioDevice(NULL, 0, &q, &r, 0);
     if (!aud) return -1;
-    aud_rate = rate;
+    aud_rate = r.freq;
     SDL_PauseAudioDevice(aud, 0);
     return 0;
 }
@@ -145,6 +146,7 @@ int plat_audio(const int16_t *s, int n)
     return n;
 }
 
+int plat_audio_rate(void) { return aud ? aud_rate : 0; }
 void plat_audio_close(void) { if (aud) SDL_CloseAudioDevice(aud); aud = 0; }
 
 int plat_audio_queue(void) { return aud ? (int)(SDL_GetQueuedAudioSize(aud) / 4) : -1; }
@@ -156,6 +158,6 @@ const char *plat_runner(const char *sys)
 {
     static char path[256];
     snprintf(path, sizeof path, "out/%s-pc", sys);
-    return SDL_strcmp(sys, "nes") ? NULL : path;
+    return access(path, X_OK) ? NULL : path;
 }
 void plat_diagnostics(void) {}
