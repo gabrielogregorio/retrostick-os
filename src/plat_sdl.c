@@ -150,6 +150,7 @@ int plat_audio_rate(void) { return aud ? aud_rate : 0; }
 void plat_audio_close(void) { if (aud) SDL_CloseAudioDevice(aud); aud = 0; }
 
 int plat_audio_queue(void) { return aud ? (int)(SDL_GetQueuedAudioSize(aud) / 4) : -1; }
+void plat_disable_retrace(void) {}
 int plat_pacing(void) { return aud ? PACE_AUDIO : PACE_CLOCK; }
 uint32_t plat_us(void) { return (uint32_t)(SDL_GetPerformanceCounter() / (SDL_GetPerformanceFrequency() / 1000000)); }
 void plat_reactivate(void) { SDL_RaiseWindow(win); }

@@ -41,6 +41,7 @@ int plat_audio_queue(void);                 /* audio frames still in the device 
  * PACE_AUDIO = plat_audio blocks; PACE_CLOCK = nothing, the runner waits on the clock */
 enum { PACE_CLOCK, PACE_VIDEO, PACE_AUDIO };
 int plat_pacing(void);
+void plat_disable_retrace(void);               /* core rate far from the TV (WonderSwan 75 Hz): pacing by clock */
 uint32_t plat_us(void);                    /* clock in microseconds (wraps in ~71 min) */
 /* used by the menu to open the game */
 int plat_launch(const char *prog, const char *game, const char *saves);

@@ -473,6 +473,7 @@ flip:
     }
 }
 
+void plat_disable_retrace(void) { vsync = 0; }
 int plat_pacing(void) { return disp >= 0 && vsync ? PACE_VIDEO : PACE_CLOCK; }
 
 /* ---------- audio: OSS on /dev/dsp, NON-blocking ----------

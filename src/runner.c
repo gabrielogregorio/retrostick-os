@@ -12,6 +12,8 @@ static input_t input;
 static int pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 static const char *saves_dir = ".";
 static int audio_ok;
+static retro_audio_buffer_status_callback_t audio_status_cb; /* the core asks for the queue level to decide on frame skip */
+static uint32_t skipped_frames;
 
 static void logcb(enum retro_log_level level, const char *fmt, ...)
 {
@@ -32,12 +34,22 @@ static bool environment(unsigned cmd, void *data)
     case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
     case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: *(const char **)data = saves_dir; return true;
     case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: ((struct retro_log_callback *)data)->log = logcb; return true;
+    case RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK: {
+        const struct retro_audio_buffer_status_callback *c = data;
+        audio_status_cb = c ? c->callback : NULL;
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY: return true;
     case RETRO_ENVIRONMENT_GET_VARIABLE: {
         /* core options tuned for the stick's ARM11 */
         struct retro_variable *v = data;
         static const char *OPTIONS[][2] = {
             {"fceumm_sndrate_hint", "32KHz"}, /* fewer samples to synthesize and send to audio */
             {"fceumm_sndquality", "Low"},
+            /* automatic frame skip: the core stops drawing when the audio queue runs low */
+            {"snes9x2002_frameskip", "auto"},
+            {"gpsp_frameskip", "auto"},
+            {"picodrive_frameskip", "auto"},
         };
         for (unsigned i = 0; i < sizeof OPTIONS / sizeof OPTIONS[0]; i++)
             if (!strcmp(v->key, OPTIONS[i][0])) { v->value = OPTIONS[i][1]; return true; }
@@ -54,6 +66,7 @@ static uint32_t ms_video, ms_audio, samples;
 static void video(const void *px, unsigned w, unsigned h, size_t pitch)
 {
     uint32_t t = plat_ms();
+    if (!px) skipped_frames++; /* skipped frame: neither draws nor waits for the TV */
     if (px) plat_present_565(px, w, h, pitch / 2);
     ms_video += plat_ms() - t;
 }
@@ -225,8 +238,11 @@ int main(int argc, char **argv)
     plat_log("game: audio %d", audio_ok);
     plat_log("game: sample rate %d", (int)av.timing.sample_rate);
 
-    /* pacing: TV retrace (stick), blocking audio (PC) or clock (if neither) */
+    /* pacing: TV retrace (stick), blocking audio (PC) or clock (if neither).
+     * A core with a rate far from the TV's 60 Hz (WonderSwan 75.47 Hz) cannot follow the retrace: it would run slow. */
+    if (av.timing.fps < 58 || av.timing.fps > 62) plat_disable_retrace();
     int pacing = plat_pacing();
+    plat_log("game: core frames per second (x100) %d", (int)(av.timing.fps * 100));
     rate_control = pacing != PACE_AUDIO;
     plat_log("game: pacing %d (0 clock, 1 TV retrace, 2 audio)", pacing);
     uint32_t frame_us = (uint32_t)(1000000.0 / av.timing.fps), next = plat_us();
@@ -235,6 +251,14 @@ int main(int argc, char **argv)
     uint32_t ms_run = 0;
     for (;;) {
         uint32_t tr = plat_ms();
+        if (audio_status_cb && audio_ok) {
+            /* device queue: 32 fragments of 512 B = 4096 audio frames at 48 kHz */
+            int queue = plat_audio_queue();
+            if (queue >= 0) {
+                int fill = queue * 100 / 4096;
+                audio_status_cb(true, fill > 100 ? 100 : fill, queue < QUEUE_TARGET / 2);
+            }
+        }
         retro_run();
         send_audio();
         ms_run += plat_ms() - tr;
@@ -267,6 +291,8 @@ int main(int argc, char **argv)
                 plat_log("audio: average ratio (x100000) %d", (int)(ratio_sum / queue_count * 100000));
             }
             plat_log("audio: underruns %d", underruns);
+            plat_log("game: skipped frames %d", (int)skipped_frames);
+            skipped_frames = 0;
             plat_log("audio: dropped frames %d", dropped);
             frames = 0; t_fps = now; ms_run = ms_video = ms_audio = samples = 0;
             queue_sum = queue_count = underruns = dropped = 0; ratio_sum = 0;

@@ -28,6 +28,10 @@ static system_t SYSTEMS[] = {
     {"sms", "Master System", "SMS", 0x23b5a3, {".sms", ".zip"}},
     {"gba", "Game Boy Advance", "GBA", 0xf09a2f, {".gba", ".zip"}},
     {"gb", "Game Boy / Color", "GB", 0x8bbf3a, {".gb", ".gbc", ".zip"}},
+    {"gg", "Game Gear", "GG", 0x5a6b8c, {".gg"}},
+    {"a26", "Atari 2600", "2600", 0xb5783a, {".a26", ".bin"}},
+    {"ngp", "Neo Geo Pocket", "NGP", 0x2f8fd8, {".ngc", ".ngp"}},
+    {"ws", "WonderSwan", "WS", 0xc04a8a, {".ws", ".wsc"}},
 };
 #define NUM_SYSTEMS ((int)(sizeof SYSTEMS / sizeof SYSTEMS[0]))
 

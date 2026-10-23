@@ -50,7 +50,11 @@ EMU_md := picodrive
 EMU_sms := picodrive
 EMU_gba := gpsp
 EMU_gb := gambatte
-SYSTEMS := snes md sms gba gb
+EMU_gg := picodrive
+EMU_a26 := stella2014
+EMU_ngp := race
+EMU_ws := wswan
+SYSTEMS := snes md sms gba gb gg a26 ngp ws
 
 .SECONDEXPANSION:
 out/%-arm: src/runner.c src/plat_stick.c src/*.h out/arm/lib$$(EMU_$$*).a
