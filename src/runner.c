@@ -58,14 +58,81 @@ static void video(const void *px, unsigned w, unsigned h, size_t pitch)
     ms_video += plat_ms() - t;
 }
 
-static void sample(int16_t l, int16_t r) { int16_t s[2] = {l, r}; if (audio_ok) plat_audio(s, 1); samples++; }
+/* audio: the core hands over the frame's audio here; send_audio() sends it all at the end of the frame */
+#define AUDIO_MAX 4096
+static int16_t audio[(AUDIO_MAX + 1) * 2]; /* audio[0..1] = last audio frame of the previous batch */
+static int naudio;
+
+static void sample(int16_t l, int16_t r)
+{
+    if (naudio < AUDIO_MAX) { audio[2 + naudio * 2] = l; audio[3 + naudio * 2] = r; naudio++; }
+    samples++;
+}
 static size_t batch(const int16_t *s, size_t n)
 {
-    uint32_t t = plat_ms();
-    if (audio_ok) plat_audio(s, n);
-    ms_audio += plat_ms() - t;
+    size_t k = n < (size_t)(AUDIO_MAX - naudio) ? n : (size_t)(AUDIO_MAX - naudio);
+    memcpy(audio + 2 + naudio * 2, s, k * 4);
+    naudio += k;
     samples += n;
     return n;
+}
+
+/* Dynamic rate control (same as RetroArch): the TV retrace (59.94 or 60 Hz) does not match
+ * the core clock (NES 60.1 Hz), so the frame's audio is stretched or shrunk by up to
+ * DRC_MAX depending on whether the device queue is below or above target. Linear resampling. */
+#define QUEUE_TARGET 2000 /* audio frames (~42 ms at 48 kHz); settles slightly below (proportional control) */
+#define DRC_MAX 0.008
+static uint32_t phase; /* fractional position (16.16) inside the batch, carried between frames */
+static int rate_control, underruns, dropped, queue_sum, queue_count;
+static double ratio_sum;
+
+static void send_audio(void)
+{
+    static int16_t out[(AUDIO_MAX * 11 / 10 + 8) * 2];
+    static int first = 1;
+    int n = naudio;
+    naudio = 0;
+    if (!audio_ok || !n) return;
+    uint32_t t = plat_ms();
+    double ratio = 1.0; /* output frames per input frame */
+    if (rate_control) {
+        int queue = plat_audio_queue();
+        if (queue >= 0) {
+            if (first || queue < QUEUE_TARGET / 4) {
+                /* start or underrun: fill the queue with silence to avoid crackling */
+                static int16_t zero[QUEUE_TARGET * 2];
+                if (!first) underruns++;
+                plat_audio(zero, QUEUE_TARGET - queue > 0 ? QUEUE_TARGET - queue : 0);
+                queue = plat_audio_queue();
+                first = 0;
+            }
+            double err = (double)(QUEUE_TARGET - queue) / QUEUE_TARGET;
+            if (err > 1) err = 1;
+            if (err < -1) err = -1;
+            ratio = 1.0 + DRC_MAX * err;
+            queue_sum += queue; queue_count++; ratio_sum += ratio;
+        }
+    }
+    int m = 0;
+    if (ratio == 1.0) {
+        memcpy(out, audio + 2, n * 4);
+        m = n;
+    } else {
+        /* audio[0..1] is the last frame of the previous batch: interpolates from audio[i] to audio[i+1] */
+        uint32_t step = (uint32_t)(65536.0 / ratio), pos = phase;
+        while ((int)(pos >> 16) < n) {
+            int i = pos >> 16, f = (pos & 0xffff) >> 1; /* 15 bits: difference x fraction fits in an int */
+            out[m * 2] = audio[i * 2] + (((audio[i * 2 + 2] - audio[i * 2]) * f) >> 15);
+            out[m * 2 + 1] = audio[i * 2 + 1] + (((audio[i * 2 + 3] - audio[i * 2 + 1]) * f) >> 15);
+            m++;
+            pos += step;
+        }
+        phase = pos - ((uint32_t)n << 16);
+    }
+    audio[0] = audio[n * 2]; audio[1] = audio[n * 2 + 1];
+    int sent = plat_audio(out, m);
+    if (sent < m) dropped += m - sent;
+    ms_audio += plat_ms() - t;
 }
 /* with ONE controller on, it is player 1, whichever it is; with both, each one is its own */
 static void poll_input(void)
@@ -147,13 +214,18 @@ int main(int argc, char **argv)
     plat_log("game: audio %d", audio_ok);
     plat_log("game: sample rate %d", (int)av.timing.sample_rate);
 
-    double frame_ms = 1000.0 / av.timing.fps, next = plat_ms();
+    /* pacing: TV retrace (stick), blocking audio (PC) or clock (if neither) */
+    int pacing = plat_pacing();
+    rate_control = pacing != PACE_AUDIO;
+    plat_log("game: pacing %d (0 clock, 1 TV retrace, 2 audio)", pacing);
+    uint32_t frame_us = (uint32_t)(1000000.0 / av.timing.fps), next = plat_us();
     uint32_t t_quit = 0, t_fps = plat_ms();
     int frames = 0;
     uint32_t ms_run = 0;
     for (;;) {
         uint32_t tr = plat_ms();
         retro_run();
+        send_audio();
         ms_run += plat_ms() - tr;
         frames++;
         uint32_t bt = input.bt[0] | input.bt[1], now = plat_ms();
@@ -162,12 +234,14 @@ int main(int argc, char **argv)
             if (!t_quit) t_quit = now;
             else if (now - t_quit > 1000) break;
         } else t_quit = 0;
-        /* without blocking audio, hold the pacing on the clock */
-        next += frame_ms;
-        if (!audio_ok || plat_audio_headroom_ms() < 0) {
-            int left = (int)(next - plat_ms());
-            if (left > 0) plat_sleep(left);
-            else if (left < -100) next = plat_ms();
+        /* nothing held the pacing (or the retrace stopped working): wait on the clock.
+         * usleep here lasts at least ~10 ms (HZ=100), so the rest is a busy wait. */
+        next += frame_us;
+        if (plat_pacing() == PACE_CLOCK) {
+            int left = (int)(next - plat_us());
+            if (left > 12000) plat_sleep(1);
+            while ((left = (int)(next - plat_us())) > 0) {}
+            if (left < -100000) next = plat_us();
         }
         if (now - t_fps >= 5000) {
             int dur = now - t_fps;
@@ -177,7 +251,14 @@ int main(int argc, char **argv)
             plat_log("game: ms/frame video (x10) %d", (int)ms_video * 10 / frames);
             plat_log("game: ms/frame audio (x10) %d", (int)ms_audio * 10 / frames);
             plat_log("game: audio samples per second %d", (int)(samples * 1000 / dur));
+            if (queue_count) {
+                plat_log("audio: average queue %d frames", queue_sum / queue_count);
+                plat_log("audio: average ratio (x100000) %d", (int)(ratio_sum / queue_count * 100000));
+            }
+            plat_log("audio: underruns %d", underruns);
+            plat_log("audio: dropped frames %d", dropped);
             frames = 0; t_fps = now; ms_run = ms_video = ms_audio = samples = 0;
+            queue_sum = queue_count = underruns = dropped = 0; ratio_sum = 0;
         }
     }
     sram(argv[1], 1);

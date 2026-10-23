@@ -21,6 +21,7 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <termios.h>
+#include <errno.h>
 #include <time.h>
 #include <unistd.h>
 #include <linux/soundcard.h>
@@ -32,7 +33,11 @@
 #define DISP_FLIP_PRI_BITMAP 0x402c6413
 #define DISP_SET_PRI_ENABLE 0x40046410
 #define DISP_SET_UPDATE 0x4004640a
-#define DISP_WAIT_FRAME 0x6402
+/* 0x6402 = disp_update: clears the "updated" flag and asks the hardware to latch the new registers.
+ * 0x6407 = disp_wait_for_updated: sleeps until the frame interrupt sets "updated"
+ * (timeout of 5 jiffies = 50 ms). Both together, after the flip, = wait for the TV retrace. */
+#define DISP_UPDATE 0x6402
+#define DISP_WAIT_UPDATED 0x6407
 #define DISP_SET_OSD_ENABLE 0x40046480 /* OSD layer: it can sit on top of the primary layer, so it is turned off */
 #define CHUNK_ALLOC 0xc00c4301
 typedef struct { uint16_t w, h, bpl; uint8_t type, pad; void *data; uint8_t rest[32]; } disp_bitmap_t; /* 44 bytes */
@@ -53,6 +58,7 @@ static int *map_x;
 static const uint32_t *last_screen;
 static const char *sim_keys;
 static int frame_count;
+static int vsync = 1; /* wait for the TV retrace on each game frame (STICK_VSYNC=0 disables it) */
 
 /* B6 bit (0..7) and B7 bit (8..12) -> button.
  * L2 and R2 arrive on the SAME bits as L1 and R1 (the receiver does not tell them apart).
@@ -99,6 +105,8 @@ static int open_disp(void)
     ioctl(disp, DISP_SET_OSD_ENABLE, 0);
     ioctl(disp, DISP_SET_UPDATE, 1);
     step("disp: ready (OSD off)", 0, 0);
+    const char *v = getenv("STICK_VSYNC");
+    if (v && *v == '0') vsync = 0;
     if (getenv("STICK_CLOCK_TEST")) {
         struct timespec a, b;
         int requested[3] = {1000, 5000, 16000};
@@ -112,17 +120,17 @@ static int open_disp(void)
             }
             step("clock: usleep(%d us) lasts on average %d us", requested[i], (int)(sum / 10));
         }
-        for (int arg = 0; arg < 2; arg++) {
-            clock_gettime(CLOCK_MONOTONIC, &a);
-            for (int k = 0; k < 10; k++) ioctl(disp, DISP_WAIT_FRAME, arg);
-            clock_gettime(CLOCK_MONOTONIC, &b);
-            step("clock: 10x ioctl 0x6402 arg %d took %d us", arg,
-                  (int)((b.tv_sec - a.tv_sec) * 1000000 + (b.tv_nsec - a.tv_nsec) / 1000));
-        }
+        /* retrace: 120 flips with wait; at 60 Hz that gives ~2000000 us, at 59.94 Hz ~2002000 */
+        ioctl(disp, DISP_UPDATE, 0);
+        ioctl(disp, DISP_WAIT_UPDATED, 0);
         clock_gettime(CLOCK_MONOTONIC, &a);
-        for (int k = 0; k < 10; k++) { ioctl(disp, DISP_FLIP_PRI_BITMAP, &bm[k & 1]); ioctl(disp, DISP_WAIT_FRAME, 0); }
+        for (int k = 0; k < 120; k++) {
+            ioctl(disp, DISP_FLIP_PRI_BITMAP, &bm[k & 1]);
+            ioctl(disp, DISP_UPDATE, 0);
+            ioctl(disp, DISP_WAIT_UPDATED, 0);
+        }
         clock_gettime(CLOCK_MONOTONIC, &b);
-        step("clock: 10x flip+0x6402 took %d us", (int)((b.tv_sec - a.tv_sec) * 1000000 + (b.tv_nsec - a.tv_nsec) / 1000), 0);
+        step("clock: 120 flips with retrace wait took %d us", (int)((b.tv_sec - a.tv_sec) * 1000000 + (b.tv_nsec - a.tv_nsec) / 1000), 0);
     }
     return 0;
 }
@@ -225,7 +233,7 @@ void plat_present(const uint32_t *t)
         }
         uint32_t t1 = plat_ms();
         ioctl(disp, DISP_FLIP_PRI_BITMAP, &bm[cur]);
-        ioctl(disp, DISP_WAIT_FRAME, 0);
+        ioctl(disp, DISP_UPDATE, 0);
         uint32_t t2 = plat_ms();
         static uint32_t sum_conv, sum_flip, n;
         sum_conv += t1 - t0; sum_flip += t2 - t1;
@@ -321,6 +329,13 @@ void plat_input(input_t *e)
     if (!fbmem && disp < 0 && sim_keys) { e->bt[0] |= simulated_key(); e->present[0] = 1; }
 }
 
+uint32_t plat_us(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000000u + t.tv_nsec / 1000;
+}
+
 uint32_t plat_ms(void)
 {
     struct timespec t;
@@ -391,37 +406,55 @@ void plat_present_565(const uint16_t *px, int w, int h, int pitch_px)
         prev = sy;
     }
 flip:
+    ioctl(disp, DISP_FLIP_PRI_BITMAP, &bm[cur]);
+    ioctl(disp, DISP_SET_PRI_ENABLE, 1);
+    if (++frame_count == 1) { ioctl(disp, DISP_SET_OSD_ENABLE, 0); step("game: first frame", 0, 0); }
+    uint32_t t0 = plat_us();
+    if (vsync) {
+        ioctl(disp, DISP_UPDATE, 0);
+        ioctl(disp, DISP_WAIT_UPDATED, 0);
+    }
     {
-        /* pacing: interval between flips, summarized every 300 frames */
-        static uint32_t t_prev, n, mn = 999, mx, over20, under10;
-        uint32_t t = plat_ms();
+        /* pacing: interval between flips (after the wait), summarized every 300 frames */
+        static uint32_t t_prev, n, mn = 999999, mx, over20, under10, wait_sum;
+        uint32_t t = plat_us();
+        wait_sum += t - t0;
         if (t_prev) {
             uint32_t d = t - t_prev;
             if (d < mn) mn = d;
             if (d > mx) mx = d;
-            if (d > 20) over20++;
-            if (d < 10) under10++;
+            if (d > 20000) over20++;
+            if (d < 10000) under10++;
             if (++n == 300) {
-                step("pacing: interval min %d max %d ms", mn, mx);
+                step("pacing: interval min %d max %d us", mn, mx);
                 step("pacing: frames >20ms %d, <10ms %d (of 300)", over20, under10);
-                n = over20 = under10 = mx = 0; mn = 999;
+                step("pacing: average retrace wait %d us (vsync %d)", wait_sum / 300, vsync);
+                /* without a real retrace the wait returns at once (or hits the 50 ms timeout): fall back to the clock */
+                if (vsync && (wait_sum / 300 < 500 || wait_sum / 300 > 30000)) {
+                    vsync = 0;
+                    step("pacing: retrace wait does not work, pacing by clock", 0, 0);
+                }
+                n = over20 = under10 = mx = wait_sum = 0; mn = 999999;
             }
         }
         t_prev = t;
     }
-    ioctl(disp, DISP_FLIP_PRI_BITMAP, &bm[cur]);
-    ioctl(disp, DISP_SET_PRI_ENABLE, 1);
-    if (++frame_count == 1) { ioctl(disp, DISP_SET_OSD_ENABLE, 0); step("game: first frame", 0, 0); }
 }
 
-/* ---------- audio: OSS on /dev/dsp; blocking write holds the pacing ---------- */
+int plat_pacing(void) { return disp >= 0 && vsync ? PACE_VIDEO : PACE_CLOCK; }
+
+/* ---------- audio: OSS on /dev/dsp, NON-blocking ----------
+ * gp_audio.ko's blocking write waits for space with msleep(1), which at HZ=100 sleeps 10 to 20 ms:
+ * far too coarse to pace frames. Non-blocking mode can only be enabled with SNDCTL_DSP_NONBLOCK (the
+ * driver ignores O_NONBLOCK on open). The TV retrace holds the pacing; the runner adjusts the audio
+ * rate from the queue (SNDCTL_DSP_GETODELAY). */
 static int dsp = -1;
 
 int plat_audio_init(int rate)
 {
     dsp = open("/dev/dsp", O_WRONLY);
     if (dsp < 0) { step("audio: could not open /dev/dsp (busy, is the factory emulator running?)", 0, 0); return -1; }
-    int fmt = AFMT_S16_LE, ch = 2, t = rate, frag = (16 << 16) | 9; /* 16 fragments of 512 B (~2.7 ms each at 48 kHz) */
+    int fmt = AFMT_S16_LE, ch = 2, t = rate, frag = (32 << 16) | 9; /* 32 fragments of 512 B (~85 ms in total at 48 kHz) */
     ioctl(dsp, SNDCTL_DSP_SETFRAGMENT, &frag);
     ioctl(dsp, SNDCTL_DSP_SETFMT, &fmt);
     ioctl(dsp, SNDCTL_DSP_CHANNELS, &ch);
@@ -429,15 +462,24 @@ int plat_audio_init(int rate)
     step("audio: requested rate %d, accepted %d", rate, t);
     audio_buf_info bi;
     if (!ioctl(dsp, SNDCTL_DSP_GETOSPACE, &bi)) step("audio: %d fragments of %d bytes", bi.fragstotal, bi.fragsize);
+    if (ioctl(dsp, SNDCTL_DSP_NONBLOCK, 0)) step("audio: SNDCTL_DSP_NONBLOCK failed", 0, 0);
     return 0;
 }
 
-void plat_audio(const int16_t *s, int n)
+int plat_audio(const int16_t *s, int n)
 {
-    if (dsp >= 0 && write(dsp, s, n * 4) < 0) { close(dsp); dsp = -1; }
+    if (dsp < 0) return 0;
+    int r = write(dsp, s, n * 4);
+    if (r < 0) return errno == EAGAIN ? 0 : (close(dsp), dsp = -1, 0);
+    return r / 4;
 }
 
-int plat_audio_headroom_ms(void) { return dsp >= 0 ? 0 : -1; }
+int plat_audio_queue(void)
+{
+    int b;
+    if (dsp < 0 || ioctl(dsp, SNDCTL_DSP_GETODELAY, &b)) return -1;
+    return b / 4;
+}
 
 void plat_reactivate(void)
 {

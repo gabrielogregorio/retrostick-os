@@ -33,8 +33,13 @@ void plat_diagnostics(void);              /* dumps serial, load and processes to
 /* used by the game runner (runner.c) */
 void plat_present_565(const uint16_t *px, int w, int h, int pitch_px); /* core frame, 4:3 */
 int plat_audio_init(int rate);              /* 0 = ok; 16-bit stereo */
-void plat_audio(const int16_t *s, int frames);
-int plat_audio_headroom_ms(void);              /* -1 if audio does NOT hold the pacing on its own */
+int plat_audio(const int16_t *s, int frames); /* returns how many audio frames were accepted */
+int plat_audio_queue(void);                 /* audio frames still in the device queue; -1 if unknown */
+/* what holds the game's pacing: PACE_VIDEO = plat_present_565 waits for the TV retrace;
+ * PACE_AUDIO = plat_audio blocks; PACE_CLOCK = nothing, the runner waits on the clock */
+enum { PACE_CLOCK, PACE_VIDEO, PACE_AUDIO };
+int plat_pacing(void);
+uint32_t plat_us(void);                    /* clock in microseconds (wraps in ~71 min) */
 /* used by the menu to open the game */
 int plat_launch(const char *prog, const char *game, const char *saves);
 const char *plat_runner(const char *system_name); /* runner path, NULL if it does not exist */

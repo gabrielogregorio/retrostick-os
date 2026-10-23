@@ -137,14 +137,17 @@ int plat_audio_init(int rate)
     return 0;
 }
 
-void plat_audio(const int16_t *s, int n)
+int plat_audio(const int16_t *s, int n)
 {
     SDL_QueueAudio(aud, s, n * 4);
     /* holds the pacing: at most ~60 ms in the queue */
     while (SDL_GetQueuedAudioSize(aud) > (Uint32)(aud_rate * 4 * 60 / 1000)) SDL_Delay(1);
+    return n;
 }
 
-int plat_audio_headroom_ms(void) { return aud ? 0 : -1; }
+int plat_audio_queue(void) { return aud ? (int)(SDL_GetQueuedAudioSize(aud) / 4) : -1; }
+int plat_pacing(void) { return aud ? PACE_AUDIO : PACE_CLOCK; }
+uint32_t plat_us(void) { return (uint32_t)(SDL_GetPerformanceCounter() / (SDL_GetPerformanceFrequency() / 1000000)); }
 void plat_reactivate(void) { SDL_RaiseWindow(win); }
 
 const char *plat_runner(const char *sys)
