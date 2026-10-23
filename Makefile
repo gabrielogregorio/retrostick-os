@@ -90,8 +90,17 @@ test: arm
 .PHONY: all pc arm run test
 
 # make card -> out/card/retro ready to copy to the root of the SD card (FAT32 with a partition)
-card: arm
-	mkdir -p out/card && cp -r card-base/. out/card/ && cp out/menu-arm out/nes-arm out/card/retro/ && mkdir -p out/card/retro/saves
+# menu music, effects and background: computed on the PC, the stick only reads them (tools/gen_audio.c)
+out/gen-audio: tools/gen_audio.c src/music.c src/aero.c src/gfx.c src/*.h
+	cc $(CFLAGS) tools/gen_audio.c src/music.c src/aero.c src/gfx.c -o $@ -lm
+out/audio/aero-background.bin: out/gen-audio
+	mkdir -p out/audio && ./out/gen-audio out/audio
+audio: out/audio/aero-background.bin
+
+card: arm audio
+	mkdir -p out/card && cp -r card-base/. out/card/ && mkdir -p out/card/retro/saves out/card/retro/audio
+	cp out/menu-arm $(SYSTEMS:%=out/%-arm) out/nes-arm out/card/retro/
+	cp out/audio/* out/card/retro/audio/
 	@echo "copy out/card/retro to the root of the SD card"
 
-.PHONY: card
+.PHONY: card audio

@@ -112,7 +112,7 @@ static void build_bubble(bubble_sprite_t *s, int r)
 }
 
 typedef struct { float x, y, speed, phase, osc; int size; } bubble_t;
-#define NUM_BUBBLES 9
+#define NUM_BUBBLES 6
 static bubble_t bubbles[NUM_BUBBLES];
 static int bw, bh;
 

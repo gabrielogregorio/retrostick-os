@@ -6,7 +6,7 @@
 #include "gfx.h"
 #include "icons.h"
 
-#define ICON_SIZE 128
+#define ICON_SIZE 102 /* small on purpose: fewer pixels per frame */
 static struct { uint32_t color[ICON_SIZE * ICON_SIZE]; uint8_t alpha[ICON_SIZE * ICON_SIZE]; int ok; } spr[ICONS_MAX];
 
 static int CX, CY;
@@ -96,11 +96,11 @@ static void draw_console(const char *s)
 /* glass bubble + console; called twice (black and white background) */
 static void draw_icon(const char *sys, uint32_t tint)
 {
-    int c = ICON_SIZE / 2, r = 54;
+    int c = ICON_SIZE / 2, r = ICON_SIZE * 54 / 128;
     gfx_round_rect(c - r - 2, c - r - 2, 2 * r + 4, 2 * r + 4, r + 2, 0xffffff, 70);                 /* rim of light */
     gfx_round_rect_grad(c - r, c - r, 2 * r, 2 * r, r, gfx_blend(tint, 0xffffff, 150), tint, 120);   /* tinted glass */
     gfx_round_rect_grad(c - r + 8, c + r / 3, 2 * r - 16, r * 2 / 3 - 4, r / 2, tint, 0xffffff, 70);  /* bounced light at the bottom */
-    CX = c; CY = c + 4; S = 1.3f;
+    CX = c; CY = c + 3; S = 1.3f * ICON_SIZE / 128;
     draw_console(sys);
     /* glass reflection over the console: overlapping layers so the edge comes out soft */
     for (int k = 0; k < 4; k++) {

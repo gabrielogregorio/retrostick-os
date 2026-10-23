@@ -11,7 +11,7 @@
 static float sine[TAB];
 static int rate = 32000;
 
-enum { EPIANO, BELL, VIBES, PAD, BASS, KICK, SHAKER, RIM, BREATH };
+enum { EPIANO, BELL, VIBES, PAD, BASS, KICK, SHAKER, RIM, BREATH, BUBBLE };
 
 typedef struct {
     int type, active, age, dur;
@@ -55,6 +55,7 @@ static void play_voice(int type, float f, float secs, float amp, float pan)
     case KICK:  v->attack = 0.001f; v->dec = expf(-s / 0.16f); v->release = v->dec; v->echo = 0; break;
     case SHAKER: v->attack = 0.002f; v->dec = expf(-s / 0.035f); v->release = v->dec; v->echo = 0.15f; break;
     case RIM:    v->attack = 0.0005f; v->dec = expf(-s / 0.03f); v->release = v->dec; v->echo = 0.3f; break;
+    case BUBBLE:  v->attack = 0.002f; v->dec = expf(-s / 0.045f); v->release = v->dec; v->echo = 0.25f; break;
     case BREATH:  v->attack = secs * 0.4f; v->dec = expf(-s / 0.3f); v->release = expf(-s / 0.12f); v->echo = 0.4f; v->dur = (int)(secs * 0.4f * rate); break;
     }
 }
@@ -90,6 +91,7 @@ static const int8_t MEL[16][6][3] = {
 };
 
 static double samples_per_step, counter;
+static int no_music; /* effects only (to record the effect files) */
 static int current_step, loop_no;
 static float master, master_target = 1;
 
@@ -142,11 +144,14 @@ void music_init(int t)
 }
 
 void music_volume(float v) { master_target = v; }
+void music_effects_only(int on) { no_music = on; if (on) master = master_target = 1; }
 
 void music_effect(int which)
 {
     switch (which) {
-    case SFX_MOVE: play_voice(BELL, 2093, 0.12f, 0.05f, 0.2f); break;
+    case SFX_MOVE: /* vertical: short bubble "plop" rising in pitch */
+        play_voice(BUBBLE, 620, 0.09f, 0.16f, 0.15f);
+        break;
     case SFX_SYSTEM:
         play_voice(BREATH, 0, 0.35f, 0.12f, 0);
         play_voice(VIBES, 1318.5f, 0.15f, 0.09f, -0.4f);
@@ -189,6 +194,12 @@ static float voice_sample(voice_t *v)
     }
     case SHAKER: { float r = noise(); s = r - v->filter; v->filter = r; break; }
     case RIM: s = 0.6f * sin_lookup(v->phase) + 0.4f * noise(); inc = 1700.0f / rate; break;
+    case BUBBLE: {
+        float t = v->age / (float)rate, k = t / 0.06f;
+        s = sin_lookup(v->phase) * 0.9f + 0.1f * sin_lookup(v->phase * 3);
+        inc = v->f * (1 + 1.4f * (k > 1 ? 1 : k)) / rate;
+        break;
+    }
     case BREATH: {
         float a = 0.02f + 0.2f * v->age / (float)(v->dur + 1);
         if (a > 0.3f) a = 0.3f;
@@ -211,7 +222,7 @@ static float voice_sample(voice_t *v)
 void music_render(int16_t *out, int n)
 {
     for (int k = 0; k < n; k++) {
-        if (counter <= 0) {
+        if (counter <= 0 && !no_music) {
             music_step(current_step++);
             if (current_step % 256 == 0) loop_no++;
             counter += samples_per_step;
