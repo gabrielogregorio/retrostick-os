@@ -3,7 +3,7 @@
 # make run   -> opens the preview on the PC
 # make test  -> runs the ARM binary under qemu-arm, headless, and saves out/stick-shot.png
 CROSS := toolchain/arm-linux-musleabi-cross/bin/arm-linux-musleabi-
-SRC := src/main.c src/gfx.c src/plat_exec.c
+SRC := src/main.c src/gfx.c src/aero.c src/icons.c src/music.c src/plat_exec.c
 CFLAGS := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 
 all: pc arm

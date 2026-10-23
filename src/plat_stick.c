@@ -487,6 +487,8 @@ int plat_audio(const int16_t *s, int n)
     return r / 4;
 }
 
+void plat_audio_close(void) { if (dsp >= 0) close(dsp); dsp = -1; }
+
 int plat_audio_queue(void)
 {
     int b;

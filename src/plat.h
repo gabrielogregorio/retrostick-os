@@ -33,6 +33,7 @@ void plat_diagnostics(void);              /* dumps serial, load and processes to
 /* used by the game runner (runner.c) */
 void plat_present_565(const uint16_t *px, int w, int h, int pitch_px); /* core frame, 4:3 */
 int plat_audio_init(int rate);              /* 0 = ok; 16-bit stereo */
+void plat_audio_close(void);               /* releases audio (the menu closes it before opening the game) */
 int plat_audio(const int16_t *s, int frames); /* returns how many audio frames were accepted */
 int plat_audio_queue(void);                 /* audio frames still in the device queue; -1 if unknown */
 /* what holds the game's pacing: PACE_VIDEO = plat_present_565 waits for the TV retrace;

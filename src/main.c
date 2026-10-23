@@ -4,7 +4,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "aero.h"
 #include "gfx.h"
+#include "icons.h"
+#include "music.h"
 #include "plat.h"
 
 #define MAX_GAMES 1000
@@ -73,110 +76,145 @@ static float approach(float a, float b) { return a + (b - a) * dt_k; }
 
 static const char *BUTTON_NAMES[12] = {"Up", "Down", "Left", "Right", "A", "B", "X", "Y", "L", "R", "Select", "Start"};
 
-static void draw_diagnostics(const input_t *e)
+static uint32_t sky[SCREEN_W * SCREEN_H]; /* Aero background, built once at startup (expensive) */
+
+static void draw_diagnostics(const input_t *e, float secs)
 {
-    gfx_gradient_v(0x1a2238, 0x0e1322);
-    gfx_text(&font_big, 32, 50, "Controller diagnostics", 0xffffff, 255);
-    gfx_text(&font_small, 32, 76, "Press buttons to see what arrives. SELECT + START goes back.", 0xa8b3cf, 255);
+    memcpy(screen, sky, sizeof screen);
+    aero_bubbles(screen, secs);
+    aero_text(&font_big, 32, 50, "Controller diagnostics", 0xffffff, 255);
+    aero_text(&font_small, 32, 76, "Press buttons to see what arrives. SELECT + START goes back.", 0xffffff, 255);
     for (int p = 0; p < 2; p++) {
         int y = 100 + p * 120;
-        gfx_round_rect(24, y, SCREEN_W - 48, 108, 10, 0x2a3350, 220);
+        aero_glass(24, y, SCREEN_W - 48, 108, 14, 170);
         char l[96];
         snprintf(l, sizeof l, "Player %d  %s", p + 1, e->present[p] ? "connected" : "no signal");
-        gfx_text(&font_small, 40, y + 22, l, e->present[p] ? 0x7be08a : 0xe07b7b, 255);
+        gfx_text(&font_small, 40, y + 22, l, e->present[p] ? 0x1a8a2a : 0xc03838, 255);
         const uint8_t *c = e->raw[p];
         snprintf(l, sizeof l, "raw: %02X %02X %02X %02X %02X %02X %02X %02X %02X", c[0], c[1], c[2], c[3], c[4], c[5],
                  c[6], c[7], c[8]);
-        gfx_text(&font_small, 300, y + 22, l, 0xd0d6e6, 255);
+        gfx_text(&font_small, 300, y + 22, l, 0x24486a, 255);
         int x = 40;
         for (int b = 0; b < 12; b++) {
             int on = e->bt[p] & (1u << b);
             int w = gfx_width(&font_small, BUTTON_NAMES[b]) + 16;
-            gfx_round_rect(x, y + 44, w, 26, 8, on ? 0xf0c040 : 0x3a4566, 255);
-            gfx_text(&font_small, x + 8, y + 62, BUTTON_NAMES[b], on ? 0x1a1a1a : 0xc0c8dc, 255);
+            aero_pill(x, y + 44, w, 24, 12, on ? 0xffc030 : 0x8fb4cf, 255);
+            gfx_text(&font_small, x + 8, y + 61, BUTTON_NAMES[b], on ? 0x3a2400 : 0x0e2a44, 255);
             x += w + 6;
             if (x > SCREEN_W - 90 && b < 11) { x = 40; y += 32; }
         }
     }
 }
 
-static void draw_menu(float carousel, const input_t *e, const char *notice, int notice_alpha)
+/* round footer button + caption */
+static int hint(int x, const char *bt, uint32_t color, const char *txt)
+{
+    int w = gfx_width(&font_small, bt);
+    int bw = w + 14 < 22 ? 22 : w + 14;
+    aero_pill(x, 330, bw, 22, 11, color, 255);
+    gfx_text(&font_small, x + (bw - w) / 2, 346, bt, 0xffffff, 255);
+    aero_text(&font_small, x + bw + 6, 346, txt, 0xffffff, 255);
+    return x + bw + 6 + gfx_width(&font_small, txt) + 18;
+}
+
+static void draw_menu(float carousel, const input_t *e, const char *notice, int notice_alpha, float secs)
 {
     system_t *s = &SYSTEMS[(int)(carousel + 0.5f + NUM_SYSTEMS * 100) % NUM_SYSTEMS];
-    uint32_t color = s->color;
-    /* cached background: recomputes the gradient only when the system changes */
+    /* background: the sky is generated once; switching systems only adds a light tint on top */
     static uint32_t background[SCREEN_W * SCREEN_H], background_color = 1;
-    if (background_color != color) {
+    if (background_color != s->color) {
+        memcpy(background, sky, sizeof background);
         gfx_target(background, SCREEN_W, SCREEN_H);
-        gfx_gradient_v(gfx_blend(0x141a2e, color, 40), 0x0c101d);
+        gfx_rect(0, 0, SCREEN_W, SCREEN_H, s->color, 22);
         gfx_target(screen, SCREEN_W, SCREEN_H);
-        background_color = color;
+        background_color = s->color;
     }
     memcpy(screen, background, sizeof screen);
+    aero_bubbles(screen, secs);
 
-    /* top */
-    gfx_text(&font_big, 28, 42, "GAME STICK", 0xffffff, 255);
+    /* top: just the controllers */
     for (int p = 0; p < 2; p++) {
-        int x = SCREEN_W - 110 + p * 44;
-        gfx_round_rect(x, 20, 36, 24, 12, e->present[p] ? 0x7be08a : 0x3a4566, 255);
+        int cx = SCREEN_W - 70 + p * 34;
+        aero_orb(cx, 28, 13, e->present[p] ? 0x3cc84a : 0x9aaabb, 255);
         char t[4] = {'P', '1' + p, 0};
-        gfx_text(&font_small, x + 9, 38, t, e->present[p] ? 0x10301a : 0x8a94ad, 255);
+        gfx_text(&font_small, cx - gfx_width(&font_small, t) / 2, 33, t, 0xffffff, 255);
     }
 
-    /* system carousel */
+    /* carousel: glass bubbles with the console inside, floating */
     for (int k = -3; k <= 3; k++) {
         int i = (int)carousel + k;
         float d = i - carousel;
         int idx = ((i % NUM_SYSTEMS) + NUM_SYSTEMS) % NUM_SYSTEMS;
-        system_t *c = &SYSTEMS[idx];
         float ad = d < 0 ? -d : d;
-        int w = 150 - (int)(ad * 22), h = 92 - (int)(ad * 14);
-        if (w < 60) continue;
-        int cx = SCREEN_W / 2 + (int)(d * 176);
-        int x = cx - w / 2, y = 120 - h / 2;
-        int alpha = ad < 1 ? 255 - (int)(ad * 110) : 145 - (int)((ad - 1) * 50);
+        float scale = ad < 1 ? 1.0f - ad * 0.32f : 0.68f - (ad - 1) * 0.2f;
+        if (scale < 0.3f) continue;
+        int alpha = ad < 1 ? 255 - (int)(ad * 60) : 195 - (int)((ad - 1) * 90);
         if (alpha < 20) continue;
-        gfx_round_rect(x + 3, y + 5, w, h, 14, 0x060812, alpha / 3);     /* shadow, never pure black */
-        gfx_round_rect_grad(x, y, w, h, 14, gfx_blend(c->color, 0xffffff, 40), gfx_blend(c->color, 0x0c101d, 90), alpha);
-        int tw = gfx_width(&font_big, c->short_name);
-        gfx_text(&font_big, cx - tw / 2, y + h / 2 + 4, c->short_name, 0xffffff, alpha);
-        char n[24];
-        snprintf(n, sizeof n, "%d games", c->n);
-        tw = gfx_width(&font_small, n);
-        gfx_text(&font_small, cx - tw / 2, y + h - 12, n, 0xeef0f8, alpha * 3 / 4);
+        int cx = SCREEN_W / 2 + (int)(d * (ad < 1 ? 150 : 150 + (ad - 1) * -20));
+        int cy = 96 + (int)(ad * 8) + (int)(__builtin_sinf(secs * 1.3f + idx * 1.7f) * 3);
+        icons_draw(screen, SCREEN_W, SCREEN_H, idx, cx, cy, scale, alpha);
     }
-    int tw = gfx_width(&font_small, s->name);
-    gfx_text(&font_small, SCREEN_W / 2 - tw / 2, 188, s->name, 0xd8deee, 255);
+    {
+        char n[160];
+        snprintf(n, sizeof n, "%s", s->name);
+        int tw = gfx_width(&font_big, n);
+        aero_text(&font_big, SCREEN_W / 2 - tw / 2, 186, n, 0xffffff, 255);
+        snprintf(n, sizeof n, s->n == 1 ? "1 game" : "%d games", s->n);
+        tw = gfx_width(&font_small, n);
+        aero_text(&font_small, SCREEN_W / 2 - tw / 2, 202, n, 0xffffff, 230);
+    }
+    int tw;
 
-    /* game list */
-    int px = 60, py = 200, pw = SCREEN_W - 120, ph = 118, line = 26;
-    gfx_round_rect(px, py, pw, ph, 12, 0x1c2440, 200);
+    /* game list on a glass panel */
+    int px = 56, py = 210, pw = SCREEN_W - 112, ph = 112, line = 26;
+    aero_glass(px, py, pw, ph, 16, 150);
     if (!s->n) {
         char m[96];
         snprintf(m, sizeof m, "No games. Copy them to roms/%s on the SD card.", s->dir);
         tw = gfx_width(&font_small, m);
-        gfx_text(&font_small, SCREEN_W / 2 - tw / 2, py + ph / 2 + 5, m, 0x8a94ad, 255);
+        gfx_text(&font_small, SCREEN_W / 2 - tw / 2, py + ph / 2 + 5, m, 0x3a5a78, 255);
     } else {
         float top = s->scroll;
         int first = (int)top;
         for (int i = first; i < s->n && i < first + 6; i++) {
             int y = py + 8 + (int)((i - top) * line);
             if (y < py + 2 || y > py + ph - line) continue;
-            if (i == s->sel) gfx_round_rect(px + 8, y, pw - 16, line - 2, 8, color, 235);
+            if (i == s->sel) aero_pill(px + 8, y, pw - 16, line - 2, 12, 0x1ea8f0, 255);
             char nm[128];
             pretty_name(s->games[i], nm, sizeof nm);
-            gfx_text(&font_small, px + 20, y + 18, nm, i == s->sel ? 0xffffff : 0xb8c0d6, 255);
+            if (i == s->sel) aero_text(&font_small, px + 22, y + 18, nm, 0xffffff, 255);
+            else gfx_text(&font_small, px + 22, y + 18, nm, 0x163a5c, 255);
         }
     }
 
     /* footer */
-    gfx_text(&font_small, 60, 344, "A  Play     L/R  System     SELECT  Diagnostics     Hold START  Quit", 0x8a94ad, 255);
+    int x = 40;
+    x = hint(x, "A", 0x2fbf3f, "Play");
+    x = hint(x, "L R", 0x7f9bb3, "System");
+    x = hint(x, "SELECT", 0x7f9bb3, "Diagnostics");
+    hint(x, "START", 0xe0503c, "hold: quit");
 
     if (notice_alpha > 0) {
-        int w = gfx_width(&font_small, notice) + 40;
-        gfx_round_rect(SCREEN_W / 2 - w / 2, 150, w, 40, 12, 0x2a3350, notice_alpha * 240 / 255);
-        gfx_text(&font_small, SCREEN_W / 2 - w / 2 + 20, 175, notice, 0xffffff, notice_alpha);
+        int w = gfx_width(&font_small, notice) + 48;
+        aero_glass(SCREEN_W / 2 - w / 2, 146, w, 44, 18, notice_alpha * 235 / 255);
+        gfx_text(&font_small, SCREEN_W / 2 - w / 2 + 24, 173, notice, 0x163a5c, notice_alpha);
     }
+}
+
+/* menu audio: keeps ~56 ms of music in the device queue (32 kHz) */
+#define MENU_RATE 32000
+#define MENU_QUEUE 1800
+static int audio_ok;
+static void feed_audio(void)
+{
+    if (!audio_ok) return;
+    static int16_t buf[MENU_QUEUE * 2];
+    int queued = plat_audio_queue();
+    if (queued < 0) queued = 0;
+    int needed = MENU_QUEUE - queued;
+    if (needed <= 0) return;
+    music_render(buf, needed);
+    plat_audio(buf, needed);
 }
 
 int main(void)
@@ -184,14 +222,21 @@ int main(void)
     if (plat_init()) return 1;
     gfx_target(screen, SCREEN_W, SCREEN_H);
     for (int i = 0; i < NUM_SYSTEMS; i++) scan_system(&SYSTEMS[i]);
+    aero_init(SCREEN_W, SCREEN_H);
+    for (int i = 0; i < NUM_SYSTEMS && i < ICONS_MAX; i++) icons_build(i, SYSTEMS[i].dir, SYSTEMS[i].color);
+    gfx_target(screen, SCREEN_W, SCREEN_H);
+    uint32_t tf = plat_ms();
+    aero_background(sky, SCREEN_W, SCREEN_H, 0);
+    plat_log("menu: aero background built in %d ms", (int)(plat_ms() - tf));
+    music_init(MENU_RATE);
+    const char *music = getenv("STICK_MUSIC");
+    audio_ok = !(music && *music == '0') && !plat_audio_init(MENU_RATE);
+    uint32_t t0 = plat_ms(), t_launch = 0;
 
     int sel = 0, diag = 0;
     float carousel = 0;
     uint32_t prev = 0, t_repeat = 0, t_notice = 0, t_start = 0, t_prev = plat_ms(), t_fps = t_prev;
-    int frames = 0, idle = 0;
-    float carousel_prev = -1, scroll_prev = -1;
-    input_t prev_input;
-    memset(&prev_input, 0, sizeof prev_input);
+    int frames = 0;
     char notice[160] = "";
     input_t e;
 
@@ -214,24 +259,35 @@ int main(void)
         } else if (pressed & (BTN_UP | BTN_DOWN)) t_repeat = now + 450;
         prev = bt;
 
+        feed_audio();
         system_t *s = &SYSTEMS[sel];
         if (diag) {
-            if ((bt & (BTN_SELECT | BTN_START)) == (BTN_SELECT | BTN_START)) diag = 0;
-        } else {
-            if (pressed & (BTN_RIGHT | BTN_R)) sel = (sel + 1) % NUM_SYSTEMS;
-            if (pressed & (BTN_LEFT | BTN_L)) sel = (sel + NUM_SYSTEMS - 1) % NUM_SYSTEMS;
-            if (pressed & BTN_DOWN && s->sel < s->n - 1) s->sel++;
-            if (pressed & BTN_UP && s->sel > 0) s->sel--;
-            if (pressed & BTN_SELECT) diag = 1;
+            if ((bt & (BTN_SELECT | BTN_START)) == (BTN_SELECT | BTN_START)) { diag = 0; music_effect(SFX_BACK); }
+        } else if (!t_launch) {
+            if (pressed & (BTN_RIGHT | BTN_R)) { sel = (sel + 1) % NUM_SYSTEMS; music_effect(SFX_SYSTEM); }
+            if (pressed & (BTN_LEFT | BTN_L)) { sel = (sel + NUM_SYSTEMS - 1) % NUM_SYSTEMS; music_effect(SFX_SYSTEM); }
+            if (pressed & BTN_DOWN && s->sel < s->n - 1) { s->sel++; music_effect(SFX_MOVE); }
+            if (pressed & BTN_UP && s->sel > 0) { s->sel--; music_effect(SFX_MOVE); }
+            if (pressed & BTN_SELECT) { diag = 1; music_effect(SFX_OPEN); }
             if (pressed & BTN_A && s->n) {
                 char nm[128];
                 pretty_name(s->games[s->sel], nm, sizeof nm);
                 snprintf(notice, sizeof notice, "Starting %s", nm);
                 t_notice = now;
+                music_effect(SFX_OPEN);
+                music_volume(0);
+                t_launch = now + 700; /* let the effect play and the music fade before opening the game */
+            }
+        } else if ((int32_t)(now - t_launch) >= 0) {
+            t_launch = 0;
+            {
+                char nm[128];
+                pretty_name(s->games[s->sel], nm, sizeof nm);
                 printf("LAUNCH %s %s/%s/%s\n", s->dir, plat_roms_dir(), s->dir, s->games[s->sel]);
                 fflush(stdout);
                 const char *r = plat_runner(s->dir);
                 if (r) {
+                    if (audio_ok) plat_audio_close(); /* the game needs /dev/dsp all to itself */
                     char path[600], saves[600];
                     snprintf(path, sizeof path, "%s/%s/%s", plat_roms_dir(), s->dir, s->games[s->sel]);
                     snprintf(saves, sizeof saves, "%s/../saves", plat_roms_dir());
@@ -239,10 +295,14 @@ int main(void)
                     int rc = plat_launch(r, path, saves);
                     plat_log("menu: game ended, code %d", rc);
                     /* back from the game: reset the timers (START may still be held) */
-                    t_notice = 0; prev = BTN_A | BTN_START | BTN_SELECT; carousel_prev = -1;
+                    t_notice = 0; prev = BTN_A | BTN_START | BTN_SELECT;
                     t_start = plat_ms() + 2000; t_prev = plat_ms();
+                    if (audio_ok) audio_ok = !plat_audio_init(MENU_RATE);
+                    music_volume(1);
                 } else {
                     snprintf(notice, sizeof notice, "Emulator for %s not installed yet", s->short_name);
+                    t_notice = now;
+                    music_volume(1);
                 }
             }
         }
@@ -262,23 +322,17 @@ int main(void)
 
         int aa = now - t_notice < 1400 ? 255 : 255 - (int)(now - t_notice - 1400);
         if (aa < 0 || !t_notice) aa = 0;
-        /* redraw only if something moved (saves CPU on the stick) */
-        float scroll = 0;
-        for (int i = 0; i < NUM_SYSTEMS; i++) scroll += SYSTEMS[i].scroll + SYSTEMS[i].sel;
-        int changed = diag || aa || pressed || __builtin_fabsf(carousel - carousel_prev) > 0.001f || __builtin_fabsf(scroll - scroll_prev) > 0.001f ||
-                    memcmp(e.present, prev_input.present, sizeof e.present);
-        carousel_prev = carousel; scroll_prev = scroll; prev_input = e;
-        if (changed || idle++ > 60) {
-            idle = 0;
+        /* the bubbles always move: redraw every frame */
+        {
             uint32_t td = plat_ms();
-            if (diag) draw_diagnostics(&e);
-            else draw_menu(carousel, &e, notice, aa);
+            if (diag) draw_diagnostics(&e, (now - t0) / 1000.0f);
+            else draw_menu(carousel, &e, notice, aa, (now - t0) / 1000.0f);
             static uint32_t draw_sum, draw_count;
             draw_sum += plat_ms() - td;
             if (++draw_count == 30) { plat_log("ms per frame: draw %d", draw_sum / 30); draw_sum = draw_count = 0; }
             plat_present(screen);
             frames++;
-        } else plat_sleep(16);
+        }
         if (now - t_fps >= 5000) {
             plat_log("fps %d over 5 s", frames * 1000 / (int)(now - t_fps));
             frames = 0; t_fps = now;
