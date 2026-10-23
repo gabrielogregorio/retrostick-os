@@ -17,7 +17,6 @@ typedef struct {
     uint32_t color;
     const char *ext[4];
     char **games;
-    char (*years)[6]; /* year of each game, read from the details the first time the row appears ("" = not read yet) */
     int n, sel;
     float scroll;
 } system_t;
@@ -51,7 +50,6 @@ static void scan_system(system_t *s)
     snprintf(path, sizeof path, "%s/%s", plat_roms_dir(), s->dir);
     DIR *d = opendir(path);
     s->games = calloc(MAX_GAMES, sizeof(char *));
-    s->years = calloc(MAX_GAMES, sizeof *s->years);
     if (!d) return;
     struct dirent *e;
     while ((e = readdir(d)) && s->n < MAX_GAMES)
@@ -271,7 +269,7 @@ static void draw_menu(float carousel, const input_t *e, const char *notice, int 
     }
     int tw;
 
-    /* game list on a glass panel: list with year on the left, cover and details on the right */
+    /* game list on a glass panel: list on the left, cover and details on the right */
     int px = 56, py = 210, pw = SCREEN_W - 112, ph = 112, line = 26;
     aero_glass(px, py, pw, ph, 16, 150);
     if (!s->n) {
@@ -288,23 +286,11 @@ static void draw_menu(float carousel, const input_t *e, const char *notice, int 
             if (y < py + 2 || y > py + ph - line) continue;
             int selected = i == s->sel;
             if (selected) aero_pill(px + 8, y, lw, line - 2, 12, 0x1ea8f0, 255);
-            char nm[128], year[8] = "";
+            char nm[128];
             pretty_name(s->games[i], nm, sizeof nm);
-            if (!s->years[i][0]) {
-                /* first time the row appears: reads only the 1st line of the details and stores it ("-" = no year) */
-                char base[300], path[700];
-                rom_basename(s->games[i], base, sizeof base);
-                snprintf(path, sizeof path, "%s/%s/.meta/%s.txt", plat_roms_dir(), s->dir, base);
-                FILE *f = fopen(path, "r");
-                if (f) { read_line(f, year, sizeof year); fclose(f); }
-                snprintf(s->years[i], sizeof s->years[i], "%s", year[0] ? year : "-");
-            }
-            if (s->years[i][0] != '-') snprintf(year, sizeof year, "%s", s->years[i]);
-            int aw = year[0] ? gfx_width(&font_tiny, year) + 10 : 0;
-            const char *t = fit_text(&font_small, nm, lw - 24 - aw);
+            const char *t = fit_text(&font_small, nm, lw - 24);
             if (selected) aero_text(&font_small, px + 20, y + 18, t, 0xffffff, 255);
             else gfx_text(&font_small, px + 20, y + 18, t, 0x163a5c, 255);
-            if (year[0]) gfx_text(&font_tiny, px + 8 + lw - aw, y + 17, year, selected ? 0xe8f6ff : 0x4a6f8f, 255);
         }
         /* cover */
         int cx = px + lw + 18, cy = py + 4;
