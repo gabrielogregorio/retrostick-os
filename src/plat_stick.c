@@ -58,6 +58,7 @@ static int *map_x;
 static const uint32_t *last_screen;
 static const char *sim_keys;
 static int frame_count;
+static int in_game; /* 1 after the first core frame (plat_present_565) */
 static int vsync = 1; /* wait for the TV retrace on each game frame (STICK_VSYNC=0 disables it) */
 
 /* B6 bit (0..7) and B7 bit (8..12) -> button.
@@ -71,7 +72,9 @@ static const uint32_t BUTTON_MAP[13] = {
 static struct { uint8_t buf[256]; int n; uint32_t seen[2]; } rx;
 static FILE *logf;
 
-/* step marker with fsync: if the stick hangs, the last line says where */
+/* step marker with fsync: if the stick hangs, the last line says where.
+ * ONLY for risky steps (startup): each fsync on the SD's FAT32 costs ~20 ms, so a burst of them
+ * mid-game freezes the screen. */
 static void step(const char *fmt, int a, int b)
 {
     if (!logf) return;
@@ -80,6 +83,15 @@ static void step(const char *fmt, int a, int b)
     fprintf(logf, "\n");
     fflush(logf);
     fsync(fileno(logf));
+}
+
+/* entry without fsync or fflush: stays in the 16 KB buffer and reaches the card in a block (statistics) */
+static void note(const char *fmt, int a, int b)
+{
+    if (!logf) return;
+    fprintf(logf, "step: ");
+    fprintf(logf, fmt, a, b);
+    fprintf(logf, "\n");
 }
 
 static int open_disp(void)
@@ -139,10 +151,9 @@ static long log_bytes;
 /* logs to STICK_LOG each packet that CHANGED (button map and controller 2) */
 static void log_packet(int j, const uint8_t *p, uint32_t now)
 {
-    if (!logf || log_bytes > 400000) return;
+    if (!logf || log_bytes > 400000 || in_game) return; /* in game, no writing to the card on each button */
     log_bytes += fprintf(logf, "t=%u P%d %02X %02X %02X %02X %02X %02X %02X %02X %02X\n", now, j + 1, p[0], p[1],
                          p[2], p[3], p[4], p[5], p[6], p[7], p[8]);
-    fflush(logf);
 }
 
 static void compute_area(int W, int H)
@@ -157,6 +168,7 @@ static void compute_area(int W, int H)
 int plat_init(void)
 {
     if (getenv("STICK_LOG")) logf = fopen(getenv("STICK_LOG"), "a");
+    if (logf) setvbuf(logf, NULL, _IOFBF, 16384);
     const char *video = getenv("STICK_VIDEO") ? getenv("STICK_VIDEO") : "disp";
     if (!strcmp(video, "disp")) {
         if (open_disp()) { disp = -1; step("disp: failed, continuing without display", 0, 0); }
@@ -212,6 +224,7 @@ static void save_ppm(void)
 
 void plat_shutdown(void)
 {
+    if (logf) { fflush(logf); fsync(fileno(logf)); }
     if (!fbmem && disp < 0) save_ppm();
 }
 
@@ -237,7 +250,7 @@ void plat_present(const uint32_t *t)
         uint32_t t2 = plat_ms();
         static uint32_t sum_conv, sum_flip, n;
         sum_conv += t1 - t0; sum_flip += t2 - t1;
-        if (++n == 30) { step("ms per frame: convert %d, flip buffer %d", sum_conv / 30, sum_flip / 30); sum_conv = sum_flip = n = 0; }
+        if (++n == 30) { note("ms per frame: convert %d, flip buffer %d", sum_conv / 30, sum_flip / 30); sum_conv = sum_flip = n = 0; }
         ioctl(disp, DISP_SET_PRI_ENABLE, 1);
         if (frame_count == 1) ioctl(disp, DISP_SET_OSD_ENABLE, 0);
         if (frame_count == 1) step("disp: first frame shown", 0, 0);
@@ -351,7 +364,7 @@ const char *plat_roms_dir(void)
     return d ? d : "/usr/retro/roms";
 }
 
-void plat_log(const char *fmt, int v) { step(fmt, v, 0); }
+void plat_log(const char *fmt, int v) { note(fmt, v, 0); }
 
 /* ---------- core frames (RGB565 -> RGB565, 4:3 box inside the panel) ---------- */
 static int *mx565, mw565, mh565, ex, ey, ew, eh;
@@ -408,7 +421,7 @@ void plat_present_565(const uint16_t *px, int w, int h, int pitch_px)
 flip:
     ioctl(disp, DISP_FLIP_PRI_BITMAP, &bm[cur]);
     ioctl(disp, DISP_SET_PRI_ENABLE, 1);
-    if (++frame_count == 1) { ioctl(disp, DISP_SET_OSD_ENABLE, 0); step("game: first frame", 0, 0); }
+    if (++frame_count == 1) { ioctl(disp, DISP_SET_OSD_ENABLE, 0); step("game: first frame", 0, 0); in_game = 1; }
     uint32_t t0 = plat_us();
     if (vsync) {
         ioctl(disp, DISP_UPDATE, 0);
@@ -426,9 +439,9 @@ flip:
             if (d > 20000) over20++;
             if (d < 10000) under10++;
             if (++n == 300) {
-                step("pacing: interval min %d max %d us", mn, mx);
-                step("pacing: frames >20ms %d, <10ms %d (of 300)", over20, under10);
-                step("pacing: average retrace wait %d us (vsync %d)", wait_sum / 300, vsync);
+                note("pacing: interval min %d max %d us", mn, mx);
+                note("pacing: frames >20ms %d, <10ms %d (of 300)", over20, under10);
+                note("pacing: average retrace wait %d us (vsync %d)", wait_sum / 300, vsync);
                 /* without a real retrace the wait returns at once (or hits the 50 ms timeout): fall back to the clock */
                 if (vsync && (wait_sum / 300 < 500 || wait_sum / 300 > 30000)) {
                     vsync = 0;

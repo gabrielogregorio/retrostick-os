@@ -8,6 +8,7 @@ void plat_reactivate(void);
 
 int plat_launch(const char *prog, const char *game, const char *saves)
 {
+    fflush(NULL); /* the menu log reaches the file before the game log */
     pid_t p = fork();
     if (p < 0) return -1;
     if (!p) {
