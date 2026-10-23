@@ -1,0 +1,15 @@
+# not in git: games, emulators (source and binaries), compiler, generated files, device firmware
+roms/*/*
+cores/*/
+toolchain/
+out/
+firmware/
+trash/
+tools/re/venv/
+__pycache__/
+cache/
+.mypy_cache/
+menu-state.txt
+favorites.txt
+launch.txt
+src/font_data.h

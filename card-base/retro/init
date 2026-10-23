@@ -1,0 +1,14 @@
+#!/bin/sh
+# Custom menu on the game stick (GeneralPlus GPL32900B). Writes NOTHING to the flash.
+# Starts our menu directly, WITHOUT the 10 in 1 (audio and screen stay ours alone).
+# The menu does not depend on a controller: controllers can be turned on and off at any time.
+# Holding START for 3 s closes the menu and this script starts the factory 10 in 1.
+# Logs: log-steps.txt (this script) and log-stick.txt (menu, games and controllers).
+R=/usr/retro
+P=$R/log-steps.txt
+step() { echo "$(cat /proc/uptime) $*" >> $P; sync; }
+
+step "1 inicio, abrindo o menu sem 10in1"
+STICK_TESTE_RELOGIO=1 STICK_ROMS=$R/roms STICK_LOG=$R/log-stick.txt $R/menu-arm >> $R/log-menu.txt 2>&1
+step "2 menu saiu (codigo $?), subindo o 10in1"
+/system/app/main &
