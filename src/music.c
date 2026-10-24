@@ -97,7 +97,7 @@ static const int8_t MEL[16][6][3] = {
 static double samples_per_step, counter;
 static int no_music;
 #define NPEND 4
-static float pending_f[NPEND], pending_a[NPEND]; static int pending_in[NPEND]; /* scheduled notes of the 8-bit effects */
+static float pending_f[NPEND], pending_a[NPEND]; static int pending_in[NPEND], pending_type[NPEND]; /* scheduled notes of the 8-bit effects */
 static int current_step, loop_no;
 static float master, master_target = 1;
 
@@ -156,11 +156,12 @@ void music_volume(float v) { master_target = v; }
 void music_effects_only(int on) { no_music = on; if (on) master = master_target = 1; }
 
 /* square note that starts `delay` seconds later (multi-note effects) */
-static void schedule(float f, float delay, float amp)
+static void schedule_voice(int type, float f, float delay, float amp)
 {
     for (int i = 0; i < NPEND; i++)
-        if (pending_in[i] <= 0) { pending_f[i] = f; pending_a[i] = amp; pending_in[i] = (int)(delay * rate); return; }
+        if (pending_in[i] <= 0) { pending_type[i] = type; pending_f[i] = f; pending_a[i] = amp; pending_in[i] = (int)(delay * rate); return; }
 }
+static void schedule(float f, float delay, float amp) { schedule_voice(SQUARE, f, delay, amp); }
 
 void music_effect(int which)
 {
@@ -186,6 +187,10 @@ void music_effect(int which)
     case SFX_BACK: /* back: two low falling notes (A5 -> E5) */
         play_voice(SQUARE, 880.0f, 0.04f, 0.24f, 0);
         schedule(659.3f, 0.05f, 0.24f);
+        break;
+    case SFX_ENTER: /* open the game: two soft low rising bubbles (C5 -> G5), no square wave */
+        play_voice(BUBBLE, 523.3f, 0.12f, 0.16f, 0);
+        schedule_voice(BUBBLE, 784.0f, 0.09f, 0.16f);
         break;
     case SFX_UNFAVORITE: /* unfavorite: the favorite arpeggio reversed and one octave down (G5 E5 C5) */
         play_voice(SQUARE, 784.0f, 0.05f, 0.24f, 0);
@@ -263,7 +268,7 @@ void music_render(int16_t *out, int n)
         }
         counter -= 1;
         for (int i = 0; i < NPEND; i++)
-            if (pending_in[i] > 0 && --pending_in[i] == 0) { in_effect = 1; play_voice(SQUARE, pending_f[i], 0.06f, pending_a[i], 0.2f); in_effect = 0; }
+            if (pending_in[i] > 0 && --pending_in[i] == 0) { in_effect = 1; play_voice(pending_type[i], pending_f[i], pending_type[i] == BUBBLE ? 0.12f : 0.06f, pending_a[i], 0.2f); in_effect = 0; }
         float l = 0, r = 0, el = 0, er = 0;
         for (int i = 0; i < NVOICES; i++) {
             voice_t *v = &voices[i];

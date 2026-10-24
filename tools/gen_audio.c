@@ -4,6 +4,7 @@
  *   sfx-h.pcm      switch system (horizontal)        sfx-v.pcm  move in the list (vertical)
  *   sfx-a.pcm      open / click                      sfx-b.pcm  back
  *   sfx-f.pcm      favorite                          sfx-d.pcm  unfavorite
+ *   sfx-e.pcm      open the game (soft)
  *   aero-background.bin    sky of the Aero theme, 640x360 0x00RRGGBB (too slow to compute on the stick)
  * Audio: 48 kHz, stereo, 16-bit little-endian, no header.
  * Usage: out/gen-audio <output dir> */
@@ -55,7 +56,8 @@ int main(int argc, char **argv)
     static const struct { int sfx; const char *name; int ms; float gain; } EFFECTS[] = {
         {SFX_SYSTEM, "sfx-h.pcm", 400, 0.63f}, {SFX_MOVE, "sfx-v.pcm", 350, 0.88f},
         {SFX_OPEN, "sfx-a.pcm", 250, 0.63f}, {SFX_BACK, "sfx-b.pcm", 250, 0.63f},
-        {SFX_FAVORITE, "sfx-f.pcm", 450, 0.63f}, {SFX_UNFAVORITE, "sfx-d.pcm", 400, 0.63f}};
+        {SFX_FAVORITE, "sfx-f.pcm", 450, 0.63f}, {SFX_UNFAVORITE, "sfx-d.pcm", 400, 0.63f},
+        {SFX_ENTER, "sfx-e.pcm", 400, 0.5f}}; /* open the game: quiet and soft */
     for (int i = 0; i < SFX_COUNT; i++) {
         music_init(SAMPLE_RATE);
         music_effects_only(1);

@@ -488,7 +488,7 @@ static FILE *open_audio(const char *name)
 
 static void load_audio(void)
 {
-    static const char *SFX_FILES[SFX_COUNT] = {"sfx-v.pcm", "sfx-h.pcm", "sfx-a.pcm", "sfx-b.pcm", "sfx-f.pcm", "sfx-d.pcm"};
+    static const char *SFX_FILES[SFX_COUNT] = {"sfx-v.pcm", "sfx-h.pcm", "sfx-a.pcm", "sfx-b.pcm", "sfx-f.pcm", "sfx-d.pcm", "sfx-e.pcm"};
     f_intro = open_audio("music-intro.pcm");
     f_loop = open_audio("music-loop.pcm");
     for (int i = 0; i < SFX_COUNT; i++) {
@@ -535,9 +535,11 @@ static void feed_audio(void)
         if (got < needed) { f_current = f_loop; fseek(f_loop, 0, SEEK_SET); }
     }
     /* volume (short ramp) + effects summed with saturation */
-    float step = (target_vol - music_vol) / needed;
+    /* music volume ramps at most 1 per 0.4 s (reaching the target within one batch, ~30 ms, would be a hard cut) */
+    const float max_step = 1.0f / (MENU_RATE * 0.4f);
     for (int k = 0; k < needed; k++) {
-        music_vol += step;
+        float diff = target_vol - music_vol;
+        music_vol += diff > max_step ? max_step : diff < -max_step ? -max_step : diff;
         int l = (int)(buf[k * 2] * music_vol), r = (int)(buf[k * 2 + 1] * music_vol);
         for (int i = 0; i < 4; i++) {
             if (playing[i].pos < 0) continue;
@@ -666,9 +668,11 @@ int main(void)
                 pretty_name(file, nm, sizeof nm);
                 snprintf(notice, sizeof notice, "Starting %s", nm);
                 t_notice = now;
-                play_sfx(SFX_OPEN);
+                /* order: the music ramps down (0.4 s), the (soft) enter sound plays, the message appears and only
+                 * then the game loads */
                 set_music_volume(0);
-                t_launch = now + 700; /* let the effect play and the music fade before opening the game */
+                play_sfx(SFX_ENTER);
+                t_launch = now + 800;
             }
         } else if ((int32_t)(now - t_launch) >= 0) {
             t_launch = 0;
@@ -680,10 +684,16 @@ int main(void)
                 fflush(stdout);
                 const char *r = plat_runner(dir);
                 if (r) {
-                    if (audio_ok) { /* the game needs /dev/dsp all to itself; first, the queue drains in silence (nothing left playing on close) */
-                        static int16_t zero[MENU_QUEUE * 2];
-                        plat_audio(zero, MENU_QUEUE);
-                        for (uint32_t t = plat_ms(); plat_audio_queue() > 0 && plat_ms() - t < 300;) plat_ms();
+                    if (audio_ok) {
+                        /* the game needs /dev/dsp all to itself. Before closing, the device's whole ring (32 x 1 KB)
+                         * gets silence: if the queue ran dry, DMA could repeat old leftovers (the pop when opening
+                         * certain games). Closes with the queue still full of silence. */
+                        static int16_t zero[1024 * 2];
+                        int sent = 0;
+                        for (uint32_t t = plat_ms(); sent < 8192 + 1024 && plat_ms() - t < 400;) {
+                            int r = plat_audio(zero, 1024);
+                            sent += r > 0 ? r : 0;
+                        }
                         plat_audio_close();
                     }
                     save_state(sel); /* on the stick the menu exits for good to open the game (all memory goes to the game) */

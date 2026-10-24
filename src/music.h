@@ -2,7 +2,7 @@
 #pragma once
 #include <stdint.h>
 
-enum { SFX_MOVE, SFX_SYSTEM, SFX_OPEN, SFX_BACK, SFX_FAVORITE, SFX_UNFAVORITE, SFX_COUNT };
+enum { SFX_MOVE, SFX_SYSTEM, SFX_OPEN, SFX_BACK, SFX_FAVORITE, SFX_UNFAVORITE, SFX_ENTER, SFX_COUNT };
 
 void music_init(int rate);
 void music_render(int16_t *stereo, int frames); /* mixes music + effects */

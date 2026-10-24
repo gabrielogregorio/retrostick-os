@@ -105,6 +105,7 @@ static double base_ratio = 1.0; /* device rate / core rate */
 static int rate_control, underruns, dropped, queue_sum, queue_count;
 static double ratio_sum;
 
+#define FADE_IN (48000 * 6 / 10) /* audio frames of the soft fade-in */
 static void send_audio(void)
 {
     static int16_t out[(AUDIO_MAX * 2 + 8) * 2];
@@ -149,6 +150,13 @@ static void send_audio(void)
         phase = pos - ((uint32_t)n << 16);
     }
     audio[0] = audio[n * 2]; audio[1] = audio[n * 2 + 1];
+    /* soft fade-in: game audio rises from 0 to normal in 0.6 s (avoids a pop when certain games open) */
+    static int fade_pos;
+    if (fade_pos < FADE_IN)
+        for (int k = 0; k < m && fade_pos < FADE_IN; k++, fade_pos++) {
+            out[k * 2] = out[k * 2] * fade_pos / FADE_IN;
+            out[k * 2 + 1] = out[k * 2 + 1] * fade_pos / FADE_IN;
+        }
     int sent = plat_audio(out, m);
     if (sent < m) dropped += m - sent;
     ms_audio += plat_ms() - t;
