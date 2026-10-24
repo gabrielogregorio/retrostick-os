@@ -252,23 +252,27 @@ void plat_present(const uint32_t *t)
                 }
             }
         } else {
-            /* stretched: each source line becomes RGB565 once (2 pixels at a time), then only the table
-             * spreads it across the width; a repeated destination line (360 -> 480) is a copy of the previous one */
+            /* stretched: each source line becomes RGB565 once (2 pixels at a time) and is spread across the width
+             * in a line in plain memory; video memory only receives copies (burst memcpy). Never copy a line
+             * from the screen itself: video memory is very slow to read. */
             static uint16_t lin565[SCREEN_W];
+            static uint16_t lout[1920];
             int prev = -1;
             for (int y = 0; y < sh; y++) {
                 int sy = y * SCREEN_H / sh;
                 uint16_t *d = base + (oy + y) * res[0] + ox;
-                if (sy == prev) { memcpy(d, d - res[0], sw * 2); continue; }
-                const uint32_t *src = t + sy * SCREEN_W;
-                uint32_t *l2 = (uint32_t *)lin565;
-                for (int x = 0; x < SCREEN_W; x += 2) {
-                    uint32_t a = src[x], b = src[x + 1];
-                    l2[x >> 1] = (((a >> 8) & 0xf800) | ((a >> 5) & 0x07e0) | ((a >> 3) & 0x001f)) |
-                                 (((b >> 8) & 0xf800) | ((b >> 5) & 0x07e0) | ((b >> 3) & 0x001f)) << 16;
+                if (sy != prev) {
+                    const uint32_t *src = t + sy * SCREEN_W;
+                    uint32_t *l2 = (uint32_t *)lin565;
+                    for (int x = 0; x < SCREEN_W; x += 2) {
+                        uint32_t a = src[x], b = src[x + 1];
+                        l2[x >> 1] = (((a >> 8) & 0xf800) | ((a >> 5) & 0x07e0) | ((a >> 3) & 0x001f)) |
+                                     (((b >> 8) & 0xf800) | ((b >> 5) & 0x07e0) | ((b >> 3) & 0x001f)) << 16;
+                    }
+                    for (int x = 0; x < sw; x++) lout[x] = lin565[map_x[x]];
+                    prev = sy;
                 }
-                for (int x = 0; x < sw; x++) d[x] = lin565[map_x[x]];
-                prev = sy;
+                memcpy(d, lout, sw * 2);
             }
         }
         uint32_t t1 = plat_ms();
@@ -438,9 +442,12 @@ void plat_present_565(const uint16_t *px, int w, int h, int pitch_px)
             memset(bm[0].data, 0, res[0] * res[1] * 2);
             memset(bm[1].data, 0, res[0] * res[1] * 2);
         }
+        /* the scaled line is built in plain memory and only copied (k times) to video memory:
+         * never copy the line above from the screen itself, that memory is slow to read */
+        static uint32_t line[960];
         for (int y = 0; y < h; y++) {
             const uint16_t *src = px + y * pitch_px;
-            uint32_t *d = (uint32_t *)(base + (dy + y * k) * res[0] + dx);
+            uint32_t *d = line;
             if (k == 2) {
                 for (int x = 0; x < w; x++) { uint32_t c = src[x]; d[x] = c | (c << 16); }
             } else if (k == 3) {
@@ -449,22 +456,23 @@ void plat_present_565(const uint16_t *px, int w, int h, int pitch_px)
                     d[0] = a | a << 16; d[1] = a | b << 16; d[2] = b | b << 16;
                     d += 3;
                 }
-                d = (uint32_t *)(base + (dy + y * k) * res[0] + dx);
             } else {
                 for (int x = 0; x < w; x++) { uint32_t c = src[x] | (uint32_t)src[x] << 16; d[x * 2] = c; d[x * 2 + 1] = c; }
             }
-            for (int r = 1; r < k; r++) memcpy(base + (dy + y * k + r) * res[0] + dx, d, w * k * 2);
+            for (int r = 0; r < k; r++) memcpy(base + (dy + y * k + r) * res[0] + dx, line, w * k * 2);
         }
         goto flip;
     }
+    static uint16_t lout[1920];
     int prev = -1;
     for (int y = 0; y < eh; y++) {
         int sy = y * h / eh;
-        uint16_t *d = base + (ey + y) * res[0] + ex;
-        if (sy == prev) { memcpy(d, d - res[0], ew * 2); continue; }
-        const uint16_t *src = px + sy * pitch_px;
-        for (int x = 0; x < ew; x++) d[x] = src[mx565[x]];
-        prev = sy;
+        if (sy != prev) {
+            const uint16_t *src = px + sy * pitch_px;
+            for (int x = 0; x < ew; x++) lout[x] = src[mx565[x]];
+            prev = sy;
+        }
+        memcpy(base + (ey + y) * res[0] + ex, lout, ew * 2);
     }
 flip:
     ioctl(disp, DISP_FLIP_PRI_BITMAP, &bm[cur]);

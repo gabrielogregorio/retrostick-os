@@ -179,12 +179,18 @@ void music_effect(int which)
         schedule(1318.5f, 0.06f, 0.24f); schedule(1568.0f, 0.12f, 0.24f); schedule(2093.0f, 0.18f, 0.26f);
         break;
     }
-    case SFX_OPEN: {
-        static const float N[] = {1174.7f, 1480, 1760, 2349.3f};
-        for (int i = 0; i < 4; i++) play_voice(BELL, N[i], 0.4f + i * 0.1f, 0.07f, -0.5f + i * 0.33f);
+    case SFX_OPEN: /* click: short 8-bit "ok" (G5 -> C6), no bell and no high tail */
+        play_voice(SQUARE, 784.0f, 0.04f, 0.26f, 0);
+        schedule(1046.5f, 0.045f, 0.26f);
         break;
-    }
-    case SFX_BACK: play_voice(VIBES, 1480, 0.12f, 0.08f, 0.3f); play_voice(VIBES, 987.8f, 0.2f, 0.08f, -0.3f); break;
+    case SFX_BACK: /* back: two low falling notes (A5 -> E5) */
+        play_voice(SQUARE, 880.0f, 0.04f, 0.24f, 0);
+        schedule(659.3f, 0.05f, 0.24f);
+        break;
+    case SFX_UNFAVORITE: /* unfavorite: the favorite arpeggio reversed and one octave down (G5 E5 C5) */
+        play_voice(SQUARE, 784.0f, 0.05f, 0.24f, 0);
+        schedule(659.3f, 0.06f, 0.24f); schedule(523.3f, 0.12f, 0.24f);
+        break;
     }
     in_effect = 0;
     /* the effect starts sounding in the next batch; the delay is that of the audio queue */

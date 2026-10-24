@@ -16,7 +16,7 @@ static retro_audio_buffer_status_callback_t audio_status_cb; /* the core asks fo
 static uint32_t skipped_frames, t_ref, ref_period;
 static double sum_sq; /* sum of squares of the core audio (RMS level in the log) */
 static long n_sq;
-static int skipped_last, drew; /* drew: the core sent an image this frame (when skipping it may not even call video) */
+static int skipped_last, consecutive_skips, drew; /* drew: the core sent an image this frame (when skipping it may not even call video) */
 
 static void logcb(enum retro_log_level level, const char *fmt, ...)
 {
@@ -273,8 +273,9 @@ int main(int argc, char **argv)
             if (audio_status_cb && audio_ok) {
                 int queue = plat_audio_queue();
                 int fill = queue < 0 ? 50 : queue * 100 / 8192; /* 32 fragments of 1 KB = 8192 frames at 48 kHz */
-                /* never two skips in a row: in the worst case the image stays at 30 fps, never freezes */
-                int skip = !skipped_last && (delay > 2000 || (queue >= 0 && queue < QUEUE_TARGET / 4));
+                /* at most 2 consecutive skips: in the worst case the image runs at 20 fps, never freezes
+                 * (a limit of 1 is too low: a heavy game may not fit even drawing every other frame) */
+                int skip = consecutive_skips < 2 && (delay > 2000 || (queue >= 0 && queue < QUEUE_TARGET / 4));
                 audio_status_cb(true, fill > 100 ? 100 : fill, skip);
             }
             t_ref += ref_period;
@@ -282,6 +283,7 @@ int main(int argc, char **argv)
         drew = 0;
         retro_run();
         skipped_last = !drew;
+        consecutive_skips = skipped_last ? consecutive_skips + 1 : 0;
         skipped_frames += skipped_last;
         send_audio();
         ms_run += plat_ms() - tr;

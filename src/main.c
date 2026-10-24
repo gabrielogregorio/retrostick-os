@@ -488,7 +488,7 @@ static FILE *open_audio(const char *name)
 
 static void load_audio(void)
 {
-    static const char *SFX_FILES[SFX_COUNT] = {"sfx-v.pcm", "sfx-h.pcm", "sfx-a.pcm", "sfx-b.pcm", "sfx-f.pcm"};
+    static const char *SFX_FILES[SFX_COUNT] = {"sfx-v.pcm", "sfx-h.pcm", "sfx-a.pcm", "sfx-b.pcm", "sfx-f.pcm", "sfx-d.pcm"};
     f_intro = open_audio("music-intro.pcm");
     f_loop = open_audio("music-loop.pcm");
     for (int i = 0; i < SFX_COUNT; i++) {
@@ -656,7 +656,7 @@ int main(void)
                 snprintf(notice, sizeof notice, added ? "%s added to favorites" : "%s removed from favorites", nm);
                 t_notice = now;
                 invalidate_details(); /* the favorites list may have changed order */
-                play_sfx(added ? SFX_FAVORITE : SFX_BACK);
+                play_sfx(added ? SFX_FAVORITE : SFX_UNFAVORITE);
             }
             /* A opens the game only on its own: the right analog stick turns into A/B/X/Y, and on a diagonal sends A+B together */
             if (pressed & BTN_A && !(bt & (BTN_B | BTN_X | BTN_Y)) && s->n) {

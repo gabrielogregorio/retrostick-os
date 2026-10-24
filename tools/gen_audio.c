@@ -3,7 +3,7 @@
  *   music-loop.pcm   32 bars that join onto themselves
  *   sfx-h.pcm      switch system (horizontal)        sfx-v.pcm  move in the list (vertical)
  *   sfx-a.pcm      open / click                      sfx-b.pcm  back
- *   sfx-f.pcm      favorite
+ *   sfx-f.pcm      favorite                          sfx-d.pcm  unfavorite
  *   aero-background.bin    sky of the Aero theme, 640x360 0x00RRGGBB (too slow to compute on the stick)
  * Audio: 48 kHz, stereo, 16-bit little-endian, no header.
  * Usage: out/gen-audio <output dir> */
@@ -34,7 +34,7 @@ int main(int argc, char **argv)
 {
     if (argc < 2) { fprintf(stderr, "usage: %s <dir>\n", argv[0]); return 2; }
     const char *dir = argv[1];
-    /* 8-bit music (src/chip.c): intro + 32-bar loop, at a loop RMS of ~1200 in 16 bits to sit level with
+    /* 8-bit music (src/chip.c): intro + 32-bar loop, at a loop RMS of ~1680 in 16 bits to sit level with
      * the core audio. Rule: never above the loudest console. */
     chip_init(SAMPLE_RATE);
     long ni = chip_intro_frames(), nl = chip_loop_frames();
@@ -43,7 +43,7 @@ int main(int argc, char **argv)
     chip_loop(buf);
     double sum = 0;
     for (long k = 0; k < nl * 2; k++) sum += (double)buf[k] * buf[k];
-    double gain = 1200.0 / sqrt(sum / (nl * 2));
+    double gain = 1680.0 / sqrt(sum / (nl * 2));
     for (long k = 0; k < nl * 2; k++) buf[k] = (int16_t)(buf[k] * gain);
     for (long k = 0; k < ni * 2; k++) intro[k] = (int16_t)(intro[k] * gain);
     printf("8-bit music: gain %.3f\n", gain);
@@ -51,10 +51,11 @@ int main(int argc, char **argv)
     /* effects: one at a time, no music, fixed length and a soft 120 ms fade-out (no click at the cut) */
     /* gain: per-effect levels, balanced against the game audio.
      * Effects have no echo (src/music.c): a bell echo would come back 500 ms later like a second hit. */
+    /* final gain on everything; click, back and unfavorite are low square waves: high bells would be annoying */
     static const struct { int sfx; const char *name; int ms; float gain; } EFFECTS[] = {
-        {SFX_SYSTEM, "sfx-h.pcm", 400, 0.45f}, {SFX_MOVE, "sfx-v.pcm", 350, 0.63f},
-        {SFX_OPEN, "sfx-a.pcm", 450, 0.45f}, {SFX_BACK, "sfx-b.pcm", 600, 1.5f},
-        {SFX_FAVORITE, "sfx-f.pcm", 450, 0.45f}};
+        {SFX_SYSTEM, "sfx-h.pcm", 400, 0.63f}, {SFX_MOVE, "sfx-v.pcm", 350, 0.88f},
+        {SFX_OPEN, "sfx-a.pcm", 250, 0.63f}, {SFX_BACK, "sfx-b.pcm", 250, 0.63f},
+        {SFX_FAVORITE, "sfx-f.pcm", 450, 0.63f}, {SFX_UNFAVORITE, "sfx-d.pcm", 400, 0.63f}};
     for (int i = 0; i < SFX_COUNT; i++) {
         music_init(SAMPLE_RATE);
         music_effects_only(1);
