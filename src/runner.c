@@ -310,10 +310,10 @@ static void idle_audio(void)
 /* pause menu. Returns 1 if the player chose to quit the game. */
 static int pause_menu(void)
 {
-    enum { RESUME, SAVE1, SAVE2, LOAD1, LOAD2, LAST, QUIT, N };
-    static const char *const ITEMS[N] = {"Resume", "Save to slot 1", "Save to slot 2", "Load slot 1",
-                                         "Load slot 2", "Back to last save", "Quit game"};
-    int sel = 0, quit = 0, redraw = 1;
+    enum { RESUME, SAVE1, SAVE2, LOAD1, LOAD2, LAST, RESTART, QUIT, N };
+    const char *items[N] = {"Resume", "Save to slot 1", "Save to slot 2", "Load slot 1",
+                            "Load slot 2", "Back to last save", "Restart game", "Quit game"};
+    int sel = 0, quit = 0, redraw = 1, confirming = 0; /* confirming: restart asks for a second A */
     char notice[64] = "";
     uint32_t prev = BTN_MODE, t_close = 0; /* the MODE that opened it is still held */
     plat_log("pause: menu opened", 0);
@@ -325,9 +325,12 @@ static int pause_menu(void)
         if (t_close && (int32_t)(now - t_close) >= 0) break;
         if (bt & BTN_QUIT) { quit = 1; break; }
         if (!t_close) {
-            if (pressed & (BTN_B | BTN_MODE)) break;
-            if (pressed & BTN_DOWN) { sel = (sel + 1) % N; redraw = 1; }
-            if (pressed & BTN_UP) { sel = (sel + N - 1) % N; redraw = 1; }
+            if (pressed & (BTN_B | BTN_MODE)) {
+                if (!confirming || pressed & BTN_MODE) break;
+                confirming = 0; notice[0] = 0; redraw = 1; /* B cancels the restart */
+            }
+            if (pressed & BTN_DOWN) { sel = (sel + 1) % N; confirming = 0; notice[0] = 0; redraw = 1; }
+            if (pressed & BTN_UP) { sel = (sel + N - 1) % N; confirming = 0; notice[0] = 0; redraw = 1; }
             if (pressed & BTN_A && !(bt & (BTN_B | BTN_X | BTN_Y))) {
                 int r = 0;
                 switch (sel) {
@@ -344,6 +347,11 @@ static int pause_menu(void)
                     else t_close = now;
                     break;
                 }
+                case RESTART:
+                    /* restarting loses progress since the last save: asks for confirmation */
+                    if (!confirming) { confirming = 1; snprintf(notice, sizeof notice, "A again restarts    B cancels"); }
+                    else { retro_reset(); plat_log("pause: game restarted", 0); t_close = now; }
+                    break;
                 case QUIT: quit = 1; break;
                 }
                 if (quit) break;
@@ -354,8 +362,10 @@ static int pause_menu(void)
             char u = last_slot();
             const char *notes[N] = {"", exists(".st1") ? "in use" : "empty", exists(".st2") ? "in use" : "empty",
                                     exists(".st1") ? "" : "empty", exists(".st2") ? "" : "empty",
-                                    u == '1' ? "slot 1" : u == '2' ? "slot 2" : u == 'a' ? "from last quit" : "none", ""};
-            pause_draw(last_w ? last_frame : NULL, last_w, last_h, ITEMS, notes, N, sel, notice);
+                                    u == '1' ? "slot 1" : u == '2' ? "slot 2" : u == 'a' ? "from last quit" : "none",
+                                    "", ""};
+            items[RESTART] = confirming ? "Restart? Confirm with A" : "Restart game";
+            pause_draw(last_w ? last_frame : NULL, last_w, last_h, items, notes, N, sel, notice);
             redraw = 0;
         }
         plat_sleep(16);
