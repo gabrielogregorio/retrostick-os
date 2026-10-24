@@ -40,6 +40,7 @@
 #define DISP_WAIT_UPDATED 0x6407
 #define DISP_SET_OSD_ENABLE 0x40046480 /* OSD layer: it can sit on top of the primary layer, so it is turned off */
 #define CHUNK_ALLOC 0xc00c4301
+#define AUDIO_OUTPUT_HDMI 0xc0045007 /* gp_audio: 1 = HDMI I2S, 0 = analog output (default) */
 typedef struct { uint16_t w, h, bpl; uint8_t type, pad; void *data; uint8_t rest[32]; } disp_bitmap_t; /* 44 bytes */
 typedef struct { uint32_t phys; void *addr; uint32_t size; } chunk_t;
 _Static_assert(sizeof(disp_bitmap_t) == 44, "bitmap struct must be 44 bytes (0x2c of the ioctl)");
@@ -501,7 +502,14 @@ int plat_audio_init(int rate)
 {
     dsp = open("/dev/dsp", O_WRONLY);
     if (dsp < 0) { step("audio: could not open /dev/dsp (busy, is the factory emulator running?)", 0, 0); return -1; }
-    int fmt = AFMT_S16_LE, ch = 2, t = rate, frag = (32 << 16) | 9; /* 32 fragments of 512 B (~85 ms in total at 48 kHz) */
+    /* OUTPUT: gp_audio.ko sends to the analog output (headphone/AV) by default; ioctl 0xc0045007 with 1 switches
+     * to HDMI I2S (DMA "ocp"). Without it the audio goes somewhere the TV does not hear.
+     * It must come BEFORE SETFRAGMENT: that rebuilds the fragments. */
+    const char *output = getenv("STICK_AUDIO_OUTPUT");
+    int hdmi = !(output && *output == '0');
+    if (ioctl(dsp, AUDIO_OUTPUT_HDMI, &hdmi)) step("audio: output selection (0xc0045007) failed", 0, 0);
+    step("audio: output hdmi %d", hdmi, 0);
+    int fmt = AFMT_S16_LE, ch = 2, t = rate, frag = (32 << 16) | 10; /* 32 fragments of 1 KB (~170 ms at 48 kHz) */
     ioctl(dsp, SNDCTL_DSP_SETFRAGMENT, &frag);
     ioctl(dsp, SNDCTL_DSP_SETFMT, &fmt);
     ioctl(dsp, SNDCTL_DSP_CHANNELS, &ch);
@@ -511,6 +519,14 @@ int plat_audio_init(int rate)
     audio_buf_info bi;
     if (!ioctl(dsp, SNDCTL_DSP_GETOSPACE, &bi)) step("audio: %d fragments of %d bytes", bi.fragstotal, bi.fragsize);
     if (ioctl(dsp, SNDCTL_DSP_NONBLOCK, 0)) step("audio: SNDCTL_DSP_NONBLOCK failed", 0, 0);
+    /* mixer volume (OSS: left | right << 8, 0 to 100): without the stock 10 in 1 nobody sets it */
+    int mix = open("/dev/mixer", O_WRONLY);
+    if (mix >= 0) {
+        int vol = 90 | 90 << 8;
+        if (ioctl(mix, SOUND_MIXER_WRITE_VOLUME, &vol)) step("audio: mixer volume failed", 0, 0);
+        else step("audio: mixer volume %d", vol & 0xff, 0);
+        close(mix);
+    } else step("audio: could not open /dev/mixer", 0, 0);
     return 0;
 }
 

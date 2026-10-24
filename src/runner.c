@@ -252,10 +252,10 @@ int main(int argc, char **argv)
     for (;;) {
         uint32_t tr = plat_ms();
         if (audio_status_cb && audio_ok) {
-            /* device queue: 32 fragments of 512 B = 4096 audio frames at 48 kHz */
+            /* device queue: 32 fragments of 1 KB = 8192 audio frames at 48 kHz */
             int queue = plat_audio_queue();
             if (queue >= 0) {
-                int fill = queue * 100 / 4096;
+                int fill = queue * 100 / 8192;
                 audio_status_cb(true, fill > 100 ? 100 : fill, queue < QUEUE_TARGET / 2);
             }
         }

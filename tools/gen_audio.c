@@ -4,7 +4,7 @@
  *   sfx-h.pcm      switch system (horizontal)        sfx-v.pcm  move in the list (vertical)
  *   sfx-a.pcm      open / click                      sfx-b.pcm  back
  *   aero-background.bin    sky of the Aero theme, 640x360 0x00RRGGBB (too slow to compute on the stick)
- * Audio: 32 kHz, stereo, 16-bit little-endian, no header.
+ * Audio: 48 kHz, stereo, 16-bit little-endian, no header.
  * Usage: out/gen-audio <output dir> */
 #include <stdio.h>
 #include <string.h>
@@ -12,7 +12,7 @@
 #include "../src/music.h"
 #include "../src/plat.h"
 
-#define SAMPLE_RATE 32000
+#define SAMPLE_RATE 48000
 #define BPM 88
 
 static int write_file(const char *dir, const char *name, const void *d, size_t n)

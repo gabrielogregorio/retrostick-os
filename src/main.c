@@ -347,8 +347,8 @@ static void draw_static(system_t *s, const input_t *e)
 /* menu audio: music and effects prebuilt in files (tools/gen_audio.c, folder retro/audio on the SD card).
  * The stick only reads and mixes: synthesizing live is too slow there and would drain the queue (choppy audio).
  * Without the files (PC preview without `make audio`), it falls back to live synthesis. */
-#define MENU_RATE 32000
-#define MENU_QUEUE 2600 /* ~81 ms in the device queue (fits in 32 x 512 B) */
+#define MENU_RATE 48000 /* same as the games; HDMI accepts it for sure */
+#define MENU_QUEUE 4000 /* ~83 ms in the device queue (fits in 32 x 1 KB) */
 static int audio_ok, audio_from_file;
 static FILE *f_intro, *f_loop, *f_current;
 static struct { int16_t *d; int n; } sfx[4];      /* SFX_MOVE, SFX_SYSTEM, SFX_OPEN, SFX_BACK */
