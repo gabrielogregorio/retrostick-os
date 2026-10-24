@@ -13,7 +13,8 @@ static int pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
 static const char *saves_dir = ".";
 static int audio_ok;
 static retro_audio_buffer_status_callback_t audio_status_cb; /* the core asks for the queue level to decide on frame skip */
-static uint32_t skipped_frames;
+static uint32_t skipped_frames, t_ref, ref_period;
+static int skipped_last, drew; /* drew: the core sent an image this frame (when skipping it may not even call video) */
 
 static void logcb(enum retro_log_level level, const char *fmt, ...)
 {
@@ -66,7 +67,7 @@ static uint32_t ms_video, ms_audio, samples;
 static void video(const void *px, unsigned w, unsigned h, size_t pitch)
 {
     uint32_t t = plat_ms();
-    if (!px) skipped_frames++; /* skipped frame: neither draws nor waits for the TV */
+    if (px) drew = 1; /* skipped frame (null px or no call): neither draws nor waits for the TV */
     if (px) plat_present_565(px, w, h, pitch / 2);
     ms_video += plat_ms() - t;
 }
@@ -246,20 +247,33 @@ int main(int argc, char **argv)
     rate_control = pacing != PACE_AUDIO;
     plat_log("game: pacing %d (0 clock, 1 TV retrace, 2 audio)", pacing);
     uint32_t frame_us = (uint32_t)(1000000.0 / av.timing.fps), next = plat_us();
+    /* reference period for lateness: on retrace, never faster than the TV (59.94 Hz) */
+    ref_period = pacing == PACE_VIDEO && frame_us < 16684 ? 16684 : frame_us;
     uint32_t t_quit = 0, t_fps = plat_ms();
     int frames = 0;
     uint32_t ms_run = 0;
     for (;;) {
         uint32_t tr = plat_ms();
-        if (audio_status_cb && audio_ok) {
-            /* device queue: 32 fragments of 1 KB = 8192 audio frames at 48 kHz */
-            int queue = plat_audio_queue();
-            if (queue >= 0) {
-                int fill = queue * 100 / 8192;
-                audio_status_cb(true, fill > 100 ? 100 : fill, queue < QUEUE_TARGET / 2);
+        /* Reference clock: when this frame should start. Late = the core skips drawing.
+         * (The audio queue alone is not a usable signal: an underrun is plugged with silence, so it never fires.) */
+        {
+            uint32_t now_us = plat_us();
+            if (!t_ref) t_ref = now_us;
+            int delay = (int)(now_us - t_ref);
+            if (delay > (int)ref_period * 3) { t_ref = now_us; delay = 0; } /* far behind: restart */
+            if (audio_status_cb && audio_ok) {
+                int queue = plat_audio_queue();
+                int fill = queue < 0 ? 50 : queue * 100 / 8192; /* 32 fragments of 1 KB = 8192 frames at 48 kHz */
+                /* never two skips in a row: in the worst case the image stays at 30 fps, never freezes */
+                int skip = !skipped_last && (delay > 2000 || (queue >= 0 && queue < QUEUE_TARGET / 4));
+                audio_status_cb(true, fill > 100 ? 100 : fill, skip);
             }
+            t_ref += ref_period;
         }
+        drew = 0;
         retro_run();
+        skipped_last = !drew;
+        skipped_frames += skipped_last;
         send_audio();
         ms_run += plat_ms() - tr;
         frames++;

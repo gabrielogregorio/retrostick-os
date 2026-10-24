@@ -457,9 +457,13 @@ flip:
     ioctl(disp, DISP_SET_PRI_ENABLE, 1);
     if (++frame_count == 1) { ioctl(disp, DISP_SET_OSD_ENABLE, 0); step("game: first frame", 0, 0); in_game = 1; }
     uint32_t t0 = plat_us();
+    static uint32_t t_last; /* end of the last retrace wait */
     if (vsync) {
         ioctl(disp, DISP_UPDATE, 0);
-        ioctl(disp, DISP_WAIT_UPDATED, 0);
+        /* a frame that is already late (more than 15 ms since the last) does not wait for the next retrace:
+         * waiting would turn 17 ms into 33 ms (30 fps); so it goes straight out (the image may tear) */
+        if (!t_last || (int)(t0 - t_last) < 15000) ioctl(disp, DISP_WAIT_UPDATED, 0);
+        t_last = plat_us();
     }
     {
         /* pacing: interval between flips (after the wait), summarized every 300 frames */

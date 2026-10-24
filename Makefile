@@ -91,8 +91,8 @@ test: arm
 
 # make card -> out/card/retro ready to copy to the root of the SD card (FAT32 with a partition)
 # menu music, effects and background: computed on the PC, the stick only reads them (tools/gen_audio.c)
-out/gen-audio: tools/gen_audio.c src/music.c src/aero.c src/gfx.c src/*.h
-	cc $(CFLAGS) tools/gen_audio.c src/music.c src/aero.c src/gfx.c -o $@ -lm
+out/gen-audio: tools/gen_audio.c src/music.c src/chip.c src/aero.c src/gfx.c src/*.h
+	cc $(CFLAGS) tools/gen_audio.c src/music.c src/chip.c src/aero.c src/gfx.c -o $@ -lm
 out/audio/aero-background.bin: out/gen-audio
 	mkdir -p out/audio && ./out/gen-audio out/audio
 audio: out/audio/aero-background.bin
