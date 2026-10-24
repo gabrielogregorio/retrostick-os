@@ -22,6 +22,7 @@ typedef struct {
 } system_t;
 
 static system_t SYSTEMS[] = {
+    {"fav", "Favorites", "FAV", 0xe8a020, {NULL}}, /* pseudo-system: games marked with Y, from any system */
     {"nes", "Nintendo Entertainment System", "NES", 0xe0484a, {".nes", ".zip"}},
     {"snes", "Super Nintendo", "SNES", 0x7a5cf0, {".sfc", ".smc", ".zip"}},
     {"md", "Mega Drive", "MD", 0x2f8cf0, {".md", ".gen", ".bin", ".zip"}},
@@ -37,6 +38,20 @@ static system_t SYSTEMS[] = {
 
 static uint32_t screen[SCREEN_W * SCREEN_H];
 
+/* ---------- favorites: retro/favorites.txt, one "system/file" line per game ---------- */
+static int fav_version; /* changes on every edit (rebuilds the static screen) */
+static int is_fav(const system_t *s) { return !strcmp(s->dir, "fav"); }
+
+/* real folder and file of game i (in favorites the entry holds "system/file") */
+static void real_game(const system_t *s, int i, char *dir, int dmax, const char **file)
+{
+    const char *j = s->games[i], *b = strchr(j, '/');
+    if (is_fav(s) && b) { snprintf(dir, dmax, "%.*s", (int)(b - j), j); *file = b + 1; }
+    else { snprintf(dir, dmax, "%s", s->dir); *file = j; }
+}
+
+static void fav_path(char *out, int max) { snprintf(out, max, "%s/../favorites.txt", plat_roms_dir()); }
+
 static int has_ext(const char *name, const char *const *ext)
 {
     const char *p = strrchr(name, '.');
@@ -48,8 +63,69 @@ static int has_ext(const char *name, const char *const *ext)
 
 static int cmp(const void *a, const void *b) { return strcasecmp(*(char **)a, *(char **)b); }
 
+static void load_favorites(system_t *s)
+{
+    if (!s->games) s->games = calloc(MAX_GAMES, sizeof(char *));
+    for (int i = 0; i < s->n; i++) free(s->games[i]);
+    s->n = 0;
+    char path[600], l[600];
+    fav_path(path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return;
+    while (s->n < MAX_GAMES && fgets(l, sizeof l, f)) {
+        l[strcspn(l, "\r\n")] = 0;
+        if (!strchr(l, '/')) continue;
+        char rom[1300];
+        snprintf(rom, sizeof rom, "%s/%s", plat_roms_dir(), l);
+        FILE *t = fopen(rom, "rb"); /* only what still exists on the SD card */
+        if (!t) continue;
+        fclose(t);
+        s->games[s->n++] = strdup(l);
+    }
+    fclose(f);
+    qsort(s->games, s->n, sizeof(char *), cmp);
+}
+
+static int is_favorite(const char *dir, const char *file)
+{
+    char k[600];
+    snprintf(k, sizeof k, "%s/%s", dir, file);
+    for (int i = 0; i < SYSTEMS[0].n; i++)
+        if (!strcmp(SYSTEMS[0].games[i], k)) return 1;
+    return 0;
+}
+
+/* marks/unmarks and rewrites the whole file; returns 1 if it ended up a favorite */
+static int toggle_favorite(const char *dir, const char *file)
+{
+    char k[640], path[600];
+    snprintf(k, sizeof k, "%s/%s", dir, file);
+    system_t *f = &SYSTEMS[0];
+    int found = -1;
+    for (int i = 0; i < f->n; i++)
+        if (!strcmp(f->games[i], k)) found = i;
+    if (found >= 0) {
+        free(f->games[found]);
+        memmove(&f->games[found], &f->games[found + 1], (f->n - found - 1) * sizeof(char *));
+        f->n--;
+    } else if (f->n < MAX_GAMES) {
+        f->games[f->n++] = strdup(k);
+        qsort(f->games, f->n, sizeof(char *), cmp);
+    }
+    fav_path(path, sizeof path);
+    FILE *o = fopen(path, "w");
+    if (o) {
+        for (int i = 0; i < f->n; i++) fprintf(o, "%s\n", f->games[i]);
+        fclose(o);
+    }
+    if (f->sel >= f->n) f->sel = f->n ? f->n - 1 : 0;
+    fav_version++;
+    return found < 0;
+}
+
 static void scan_system(system_t *s)
 {
+    if (is_fav(s)) { load_favorites(s); return; }
     char path[512];
     snprintf(path, sizeof path, "%s/%s", plat_roms_dir(), s->dir);
     DIR *d = opendir(path);
@@ -141,9 +217,11 @@ static void load_details(int si, int sel)
     details.year[0] = details.genre[0] = details.dev[0] = details.desc[0] = 0;
     system_t *s = &SYSTEMS[si];
     if (sel < 0 || sel >= s->n) return;
-    char base[300], path[700];
-    rom_basename(s->games[sel], base, sizeof base);
-    snprintf(path, sizeof path, "%s/%s/.meta/%s.txt", plat_roms_dir(), s->dir, base);
+    char base[300], path[700], dir[16];
+    const char *file;
+    real_game(s, sel, dir, sizeof dir, &file);
+    rom_basename(file, base, sizeof base);
+    snprintf(path, sizeof path, "%s/%s/.meta/%s.txt", plat_roms_dir(), dir, base);
     FILE *f = fopen(path, "r");
     if (f) {
         read_line(f, details.year, sizeof details.year);
@@ -153,7 +231,7 @@ static void load_details(int si, int sel)
         fclose(f);
     }
     /* cover: 'CAP1', u16 w, u16 h, 16 RGB565 colors, 4-bit pixels */
-    snprintf(path, sizeof path, "%s/%s/.meta/%s.cap", plat_roms_dir(), s->dir, base);
+    snprintf(path, sizeof path, "%s/%s/.meta/%s.cap", plat_roms_dir(), dir, base);
     f = fopen(path, "rb");
     if (!f) return;
     uint8_t hdr[8 + 32], px[COVER_W * COVER_H / 2];
@@ -233,8 +311,8 @@ static void draw_menu(float carousel, const input_t *e, const char *notice, int 
     /* Cached static screen: sky + system tint + controllers + name + panel (list, cover, details) + footer.
      * Rebuilt only when something in it changes; each frame adds just the bubbles and the carousel. */
     static uint32_t static_layer[SCREEN_W * SCREEN_H];
-    static int key[6] = {-1};
-    int k[6] = {(int)(s - SYSTEMS), s->sel, (int)(s->scroll * 100), e->present[0], e->present[1], details.sel};
+    static int key[7] = {-1};
+    int k[7] = {(int)(s - SYSTEMS), s->sel, (int)(s->scroll * 100), e->present[0], e->present[1], details.sel, fav_version};
     if (memcmp(k, key, sizeof k)) {
         memcpy(key, k, sizeof k);
         memcpy(static_layer, sky, sizeof static_layer);
@@ -297,7 +375,8 @@ static void draw_static(system_t *s, const input_t *e)
     aero_glass(px, py, pw, ph, 16, 150);
     if (!s->n) {
         char m[96];
-        snprintf(m, sizeof m, "No games. Copy them to roms/%s on the SD card.", s->dir);
+        if (is_fav(s)) snprintf(m, sizeof m, "No favorites yet: press Y on a game.");
+        else snprintf(m, sizeof m, "No games. Copy them to roms/%s on the SD card.", s->dir);
         tw = gfx_width(&font_small, m);
         gfx_text(&font_small, SCREEN_W / 2 - tw / 2, py + ph / 2 + 5, m, 0x3a5a78, 255);
     } else {
@@ -309,9 +388,22 @@ static void draw_static(system_t *s, const input_t *e)
             if (y < py + 2 || y > py + ph - line) continue;
             int selected = i == s->sel;
             if (selected) aero_pill(px + 8, y, lw, line - 2, 12, 0x1ea8f0, 255);
-            char nm[128];
-            pretty_name(s->games[i], nm, sizeof nm);
-            const char *t = fit_text(&font_small, nm, lw - 24);
+            char nm[128], dir[16];
+            const char *file;
+            real_game(s, i, dir, sizeof dir, &file);
+            pretty_name(file, nm, sizeof nm);
+            /* on the right: in favorites, the system tag; in systems, the star if it is a favorite */
+            int dw = 0;
+            if (is_fav(s)) {
+                const char *tag = dir;
+                for (int q = 1; q < NUM_SYSTEMS; q++) if (!strcmp(SYSTEMS[q].dir, dir)) tag = SYSTEMS[q].short_name;
+                dw = gfx_width(&font_tiny, tag) + 10;
+                gfx_text(&font_tiny, px + 8 + lw - dw, y + 17, tag, selected ? 0xe8f6ff : 0x4a6f8f, 255);
+            } else if (is_favorite(dir, file)) {
+                dw = 22;
+                gfx_star(px + lw - 6, y + 12, 8, 0xfff6b0, 0xe89a10, 255);
+            }
+            const char *t = fit_text(&font_small, nm, lw - 24 - dw);
             if (selected) aero_text(&font_small, px + 20, y + 18, t, 0xffffff, 255);
             else gfx_text(&font_small, px + 20, y + 18, t, 0x163a5c, 255);
         }
@@ -337,11 +429,12 @@ static void draw_static(system_t *s, const input_t *e)
     }
 
     /* footer */
-    int x = 40;
+    int x = 24;
     x = hint(x, "A", 0x2fbf3f, "Play");
+    x = hint(x, "Y", 0xe8a020, is_fav(s) ? "Remove" : "Favorite");
     x = hint(x, "L R", 0x7f9bb3, "System");
-    x = hint(x, "SELECT", 0x7f9bb3, "Diagnostics");
-    hint(x, "START", 0xe0503c, "hold: quit");
+    x = hint(x, "SELECT", 0x7f9bb3, "Controls");
+    hint(x, "START", 0xe0503c, "quit");
 }
 
 /* menu audio: music and effects prebuilt in files (tools/gen_audio.c, folder retro/audio on the SD card).
@@ -429,6 +522,35 @@ static void feed_audio(void)
     plat_audio(buf, needed);
 }
 
+/* menu state (chosen system and marked game in each): the menu exits to open the game and comes back here */
+static void state_path(char *out, int max) { snprintf(out, max, "%s/../menu-state.txt", plat_roms_dir()); }
+
+static void save_state(int sel)
+{
+    char path[600];
+    state_path(path, sizeof path);
+    FILE *f = fopen(path, "w");
+    if (!f) return;
+    fprintf(f, "system %d\n", sel);
+    for (int i = 0; i < NUM_SYSTEMS; i++) fprintf(f, "%s %d\n", SYSTEMS[i].dir, SYSTEMS[i].sel);
+    fclose(f);
+}
+
+static int load_state(void)
+{
+    char path[600], d[32];
+    int sel = 1, v; /* no state: starts on NES (0 is Favorites) */
+    state_path(path, sizeof path);
+    FILE *f = fopen(path, "r");
+    if (!f) return sel;
+    if (fscanf(f, "system %d", &v) == 1 && v >= 0 && v < NUM_SYSTEMS) sel = v;
+    while (fscanf(f, "%31s %d", d, &v) == 2)
+        for (int i = 0; i < NUM_SYSTEMS; i++)
+            if (!strcmp(SYSTEMS[i].dir, d) && v >= 0 && v < SYSTEMS[i].n) SYSTEMS[i].sel = v;
+    fclose(f);
+    return sel;
+}
+
 int main(void)
 {
     if (plat_init()) return 1;
@@ -451,8 +573,13 @@ int main(void)
     audio_ok = !(music && *music == '0') && !plat_audio_init(MENU_RATE);
     uint32_t t0 = plat_ms(), t_launch = 0;
 
-    int sel = 0, diag = 0;
-    float carousel = 0;
+    int sel = load_state(), diag = 0;
+    float carousel = sel;
+    for (int i = 0; i < NUM_SYSTEMS; i++) { /* list already scrolled to the marked game */
+        float r = SYSTEMS[i].sel - 2 < 0 ? 0 : SYSTEMS[i].sel - 2;
+        if (r > SYSTEMS[i].n - 4 && SYSTEMS[i].n > 4) r = SYSTEMS[i].n - 4;
+        SYSTEMS[i].scroll = SYSTEMS[i].n <= 4 ? 0 : r;
+    }
     uint32_t prev = 0, t_repeat = 0, t_notice = 0, t_start = 0, t_prev = plat_ms(), t_fps = t_prev;
     int frames = 0;
     char notice[160] = "";
@@ -487,9 +614,25 @@ int main(void)
             if (pressed & BTN_DOWN && s->sel < s->n - 1) { s->sel++; play_sfx(SFX_MOVE); }
             if (pressed & BTN_UP && s->sel > 0) { s->sel--; play_sfx(SFX_MOVE); }
             if (pressed & BTN_SELECT) { diag = 1; play_sfx(SFX_OPEN); }
-            if (pressed & BTN_A && s->n) {
+            if (pressed & BTN_Y && s->n) {
+                char dir[16];
+                const char *file;
+                real_game(s, s->sel, dir, sizeof dir, &file);
+                char file_copy[600];
+                snprintf(file_copy, sizeof file_copy, "%s", file); /* toggle changes the favorites list (file may point into it) */
                 char nm[128];
-                pretty_name(s->games[s->sel], nm, sizeof nm);
+                pretty_name(file_copy, nm, sizeof nm);
+                int added = toggle_favorite(dir, file_copy);
+                snprintf(notice, sizeof notice, added ? "%s added to favorites" : "%s removed from favorites", nm);
+                t_notice = now;
+                details.sys = -1; /* the favorites list may have changed order */
+                play_sfx(added ? SFX_OPEN : SFX_BACK);
+            }
+            if (pressed & BTN_A && s->n) {
+                char nm[128], dir[16];
+                const char *file;
+                real_game(s, s->sel, dir, sizeof dir, &file);
+                pretty_name(file, nm, sizeof nm);
                 snprintf(notice, sizeof notice, "Starting %s", nm);
                 t_notice = now;
                 play_sfx(SFX_OPEN);
@@ -499,15 +642,17 @@ int main(void)
         } else if ((int32_t)(now - t_launch) >= 0) {
             t_launch = 0;
             {
-                char nm[128];
-                pretty_name(s->games[s->sel], nm, sizeof nm);
-                printf("LAUNCH %s %s/%s/%s\n", s->dir, plat_roms_dir(), s->dir, s->games[s->sel]);
+                char dir[16];
+                const char *file;
+                real_game(s, s->sel, dir, sizeof dir, &file);
+                printf("LAUNCH %s %s/%s/%s\n", dir, plat_roms_dir(), dir, file);
                 fflush(stdout);
-                const char *r = plat_runner(s->dir);
+                const char *r = plat_runner(dir);
                 if (r) {
                     if (audio_ok) plat_audio_close(); /* the game needs /dev/dsp all to itself */
+                    save_state(sel); /* on the stick the menu exits for good to open the game (all memory goes to the game) */
                     char path[600], saves[600];
-                    snprintf(path, sizeof path, "%s/%s/%s", plat_roms_dir(), s->dir, s->games[s->sel]);
+                    snprintf(path, sizeof path, "%s/%s/%s", plat_roms_dir(), dir, file);
                     snprintf(saves, sizeof saves, "%s/../saves", plat_roms_dir());
                     plat_log("menu: opening game", 0);
                     int rc = plat_launch(r, path, saves);
@@ -518,7 +663,7 @@ int main(void)
                     if (audio_ok) audio_ok = !plat_audio_init(MENU_RATE);
                     set_music_volume(1);
                 } else {
-                    snprintf(notice, sizeof notice, "Emulator for %s not installed yet", s->short_name);
+                    snprintf(notice, sizeof notice, "Emulator for %s not installed yet", dir);
                     t_notice = now;
                     set_music_volume(1);
                 }

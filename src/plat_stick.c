@@ -340,6 +340,8 @@ static uint32_t simulated_key(void)
     switch (*p) {
     case 'U': return BTN_UP;
     case 'D': return BTN_DOWN;
+    case 'X': return BTN_X;
+    case 'Y': return BTN_Y;
     case 'L': return BTN_LEFT;
     case 'R': return BTN_RIGHT;
     case 'A': return BTN_A;

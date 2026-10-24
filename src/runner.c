@@ -14,6 +14,8 @@ static const char *saves_dir = ".";
 static int audio_ok;
 static retro_audio_buffer_status_callback_t audio_status_cb; /* the core asks for the queue level to decide on frame skip */
 static uint32_t skipped_frames, t_ref, ref_period;
+static double sum_sq; /* sum of squares of the core audio (RMS level in the log) */
+static long n_sq;
 static int skipped_last, drew; /* drew: the core sent an image this frame (when skipping it may not even call video) */
 
 static void logcb(enum retro_log_level level, const char *fmt, ...)
@@ -84,6 +86,8 @@ static void sample(int16_t l, int16_t r)
 }
 static size_t batch(const int16_t *s, size_t n)
 {
+    for (size_t q = 0; q < n * 2; q++) sum_sq += (double)s[q] * s[q]; /* core audio level (RMS), for the log */
+    n_sq += n * 2;
     size_t k = n < (size_t)(AUDIO_MAX - naudio) ? n : (size_t)(AUDIO_MAX - naudio);
     memcpy(audio + 2 + naudio * 2, s, k * 4);
     naudio += k;
@@ -306,6 +310,8 @@ int main(int argc, char **argv)
             }
             plat_log("audio: underruns %d", underruns);
             plat_log("game: skipped frames %d", (int)skipped_frames);
+            if (n_sq) plat_log("audio: rms level %d", (int)__builtin_sqrt(sum_sq / n_sq));
+            sum_sq = 0; n_sq = 0;
             skipped_frames = 0;
             plat_log("audio: dropped frames %d", dropped);
             frames = 0; t_fps = now; ms_run = ms_video = ms_audio = samples = 0;

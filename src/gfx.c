@@ -113,3 +113,29 @@ int gfx_text(const font_t *f, int x, int y, const char *s, uint32_t color, int a
     }
     return x;
 }
+
+/* 5-pointed star (point up), edge smoothed with 3x3 samples, top-to-bottom gradient */
+static int inside_star(float x, float y, const float *vx, const float *vy)
+{
+    int c = 0;
+    for (int i = 0, j = 9; i < 10; j = i++)
+        if (((vy[i] > y) != (vy[j] > y)) && (x < (vx[j] - vx[i]) * (y - vy[i]) / (vy[j] - vy[i]) + vx[i])) c = !c;
+    return c;
+}
+
+void gfx_star(int cx, int cy, int radius, uint32_t top, uint32_t bottom, int alpha)
+{
+    float vx[10], vy[10];
+    for (int i = 0; i < 10; i++) {
+        float a = -1.5707963f + i * 0.62831853f, r = (i & 1) ? radius * 0.46f : radius;
+        vx[i] = cx + r * __builtin_cosf(a);
+        vy[i] = cy + r * __builtin_sinf(a);
+    }
+    for (int y = cy - radius; y <= cy + radius; y++)
+        for (int x = cx - radius; x <= cx + radius; x++) {
+            int n = 0;
+            for (int sy = 0; sy < 3; sy++)
+                for (int sx = 0; sx < 3; sx++) n += inside_star(x + (sx + 0.5f) / 3, y + (sy + 0.5f) / 3, vx, vy);
+            if (n) plot(x, y, gfx_blend(top, bottom, (y - cy + radius) * 255 / (2 * radius + 1)), alpha * n / 9);
+        }
+}

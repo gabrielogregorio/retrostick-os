@@ -1,5 +1,9 @@
-/* Opens the game runner as another process and waits for it to finish (PC and stick). */
+/* Opens the game runner.
+ * On the stick (STICK_GAME_VIA_INIT, set by retro/init): the menu writes the request to retro/launch.txt and
+ * EXITS (code 10); init runs the game and reopens the menu. That leaves the menu's memory and screen free for the game.
+ * On the PC: another process, and the menu waits. */
 #include <stdio.h>
+#include <stdlib.h>
 #include <sys/wait.h>
 #include <unistd.h>
 #include "plat.h"
@@ -9,6 +13,17 @@ void plat_reactivate(void);
 int plat_launch(const char *prog, const char *game, const char *saves)
 {
     fflush(NULL); /* the menu log reaches the file before the game log */
+    if (getenv("STICK_GAME_VIA_INIT")) {
+        char path[600];
+        snprintf(path, sizeof path, "%s/../launch.txt", plat_roms_dir());
+        FILE *f = fopen(path, "w");
+        if (f) {
+            fprintf(f, "%s\n%s\n%s\n", prog, game, saves);
+            fclose(f);
+            plat_shutdown();
+            exit(10);
+        }
+    }
     pid_t p = fork();
     if (p < 0) return -1;
     if (!p) {

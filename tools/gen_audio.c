@@ -33,7 +33,8 @@ int main(int argc, char **argv)
 {
     if (argc < 2) { fprintf(stderr, "usage: %s <dir>\n", argv[0]); return 2; }
     const char *dir = argv[1];
-    /* 8-bit music (src/chip.c): intro + 32-bar loop, at a loop RMS of ~800 in 16 bits. */
+    /* 8-bit music (src/chip.c): intro + 32-bar loop, at a loop RMS of ~800 in 16 bits.
+     * Rule: never above the loudest console. */
     chip_init(SAMPLE_RATE);
     long ni = chip_intro_frames(), nl = chip_loop_frames();
     static int16_t intro[SAMPLE_RATE * 10 * 2];

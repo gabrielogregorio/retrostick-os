@@ -64,6 +64,10 @@ static void draw_console(const char *s)
         cross(-8, 10, 11, 0x24242a);
         C(7, 13, 3.6f, 0xa82a5c); C(13, 8, 3.6f, 0xa82a5c);
         R(-5, 20, 5, 2.5f, 1, 0x80807a); R(1, 20, 5, 2.5f, 1, 0x80807a);
+    } else if (!strcmp(s, "fav")) {
+        /* favorites: golden star with shine */
+        gfx_star(CX, CY - 2, (int)(33 * S), 0xfff6b0, 0xe89a10, 255);
+        gfx_star(CX - (int)(4 * S), CY - (int)(7 * S), (int)(12 * S), 0xffffff, 0xfff0a0, 150);
     } else if (!strcmp(s, "gg")) {
         R(-38, -17, 76, 34, 11, 0x2c2c32);
         R(-15, -13, 30, 25, 3, 0x40404e);

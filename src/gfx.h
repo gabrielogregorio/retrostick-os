@@ -10,3 +10,4 @@ void gfx_round_rect_grad(int x, int y, int w, int h, int radius, uint32_t top, u
 int gfx_text(const font_t *f, int x, int y, const char *utf8, uint32_t color, int alpha);
 int gfx_width(const font_t *f, const char *utf8);
 uint32_t gfx_blend(uint32_t a, uint32_t b, int t); /* t 0..255 */
+void gfx_star(int cx, int cy, int radius, uint32_t top, uint32_t bottom, int alpha);
