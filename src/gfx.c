@@ -2,9 +2,10 @@
 #include "gfx.h"
 
 static uint32_t *P;
-static int W, H;
+static int W, H, CY0, CY1; /* CY0..CY1: band of rows where drawing is allowed (clipping) */
 
-void gfx_target(uint32_t *px, int w, int h) { P = px; W = w; H = h; }
+void gfx_target(uint32_t *px, int w, int h) { P = px; W = w; H = h; CY0 = 0; CY1 = h; }
+void gfx_clip_y(int y0, int y1) { CY0 = y0 < 0 ? 0 : y0; CY1 = y1 > H ? H : y1; }
 
 uint32_t gfx_blend(uint32_t a, uint32_t b, int t)
 {
@@ -15,7 +16,7 @@ uint32_t gfx_blend(uint32_t a, uint32_t b, int t)
 
 static inline void plot(int x, int y, uint32_t color, int alpha)
 {
-    if ((unsigned)x >= (unsigned)W || (unsigned)y >= (unsigned)H) return;
+    if ((unsigned)x >= (unsigned)W || y < CY0 || y >= CY1) return;
     uint32_t *d = &P[y * W + x];
     *d = alpha >= 255 ? color : gfx_blend(*d, color, alpha);
 }
@@ -58,7 +59,7 @@ void gfx_round_rect_grad(int x, int y, int w, int h, int r, uint32_t top, uint32
     if (alpha <= 0) return;
     for (int j = 0; j < h; j++) {
         int yy = y + j;
-        if ((unsigned)yy >= (unsigned)H) continue;
+        if (yy < CY0 || yy >= CY1) continue;
         uint32_t color = h > 1 ? gfx_blend(top, bottom, j * 255 / (h - 1)) : top;
         int dy = j < r ? r - j : (j >= h - r ? j - (h - r - 1) : 0);
         int m0 = 0, m1 = w; /* middle span without corners */

@@ -153,13 +153,18 @@ static void send_audio(void)
     if (sent < m) dropped += m - sent;
     ms_audio += plat_ms() - t;
 }
-/* with ONE controller on, it is player 1, whichever it is; with both, each one is its own */
+/* Player 1 = the first controller to press any button in game; the other is player 2.
+ * This holds until the game quits: turning the other controller on or off midway swaps nobody,
+ * so the controller in use can never become 2 and seem dead. */
 static void poll_input(void)
 {
+    static int primary = -1;
     plat_input(&input);
-    if (!input.present[0] && input.present[1]) {
-        input.bt[0] |= input.bt[1];
-        input.bt[1] = 0;
+    if (primary < 0) primary = input.bt[0] ? 0 : input.bt[1] ? 1 : -1;
+    if (primary == 1) {
+        uint32_t t = input.bt[0];
+        input.bt[0] = input.bt[1];
+        input.bt[1] = t;
     }
 }
 

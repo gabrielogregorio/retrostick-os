@@ -11,7 +11,7 @@
 static float sine[TAB];
 static int rate = 32000;
 
-enum { EPIANO, BELL, VIBES, PAD, BASS, KICK, SHAKER, RIM, BREATH, BUBBLE };
+enum { EPIANO, BELL, VIBES, PAD, BASS, KICK, SHAKER, RIM, BREATH, BUBBLE, SQUARE };
 
 typedef struct {
     int type, active, age, dur;
@@ -55,6 +55,7 @@ static void play_voice(int type, float f, float secs, float amp, float pan)
     case KICK:  v->attack = 0.001f; v->dec = expf(-s / 0.16f); v->release = v->dec; v->echo = 0; break;
     case SHAKER: v->attack = 0.002f; v->dec = expf(-s / 0.035f); v->release = v->dec; v->echo = 0.15f; break;
     case RIM:    v->attack = 0.0005f; v->dec = expf(-s / 0.03f); v->release = v->dec; v->echo = 0.3f; break;
+    case SQUARE: v->attack = 0.001f; v->dec = expf(-s / 0.07f); v->release = expf(-s / 0.02f); v->echo = 0.2f; break;
     case BUBBLE:  v->attack = 0.002f; v->dec = expf(-s / 0.045f); v->release = v->dec; v->echo = 0.25f; break;
     case BREATH:  v->attack = secs * 0.4f; v->dec = expf(-s / 0.3f); v->release = expf(-s / 0.12f); v->echo = 0.4f; v->dur = (int)(secs * 0.4f * rate); break;
     }
@@ -91,7 +92,8 @@ static const int8_t MEL[16][6][3] = {
 };
 
 static double samples_per_step, counter;
-static int no_music; /* effects only (to record the effect files) */
+static int no_music;
+static float pending_f; static int pending_in; /* scheduled note of the horizontal effect */ /* effects only (to record the effect files) */
 static int current_step, loop_no;
 static float master, master_target = 1;
 
@@ -152,11 +154,12 @@ void music_effect(int which)
     case SFX_MOVE: /* vertical: short bubble "plop" rising in pitch */
         play_voice(BUBBLE, 620, 0.09f, 0.16f, 0.15f);
         break;
-    case SFX_SYSTEM:
-        play_voice(BREATH, 0, 0.35f, 0.12f, 0);
-        play_voice(VIBES, 1318.5f, 0.15f, 0.09f, -0.4f);
-        play_voice(VIBES, 1975.5f, 0.25f, 0.07f, 0.4f);
+    case SFX_SYSTEM: { /* horizontal: 8-bit "blip-blip", two fast rising notes (E6 -> B6) */
+        play_voice(SQUARE, 1318.5f, 0.045f, 0.28f, -0.2f);
+        int delay = (int)(0.05f * rate); /* the second note starts 50 ms later */
+        pending_f = 1975.5f; pending_in = delay;
         break;
+    }
     case SFX_OPEN: {
         static const float N[] = {1174.7f, 1480, 1760, 2349.3f};
         for (int i = 0; i < 4; i++) play_voice(BELL, N[i], 0.4f + i * 0.1f, 0.07f, -0.5f + i * 0.33f);
@@ -194,6 +197,11 @@ static float voice_sample(voice_t *v)
     }
     case SHAKER: { float r = noise(); s = r - v->filter; v->filter = r; break; }
     case RIM: s = 0.6f * sin_lookup(v->phase) + 0.4f * noise(); inc = 1700.0f / rate; break;
+    case SQUARE: {
+        float f = v->phase - (int)v->phase;
+        s = (f < 0.25f ? 1.0f : -1.0f) * 0.6f;
+        break;
+    }
     case BUBBLE: {
         float t = v->age / (float)rate, k = t / 0.06f;
         s = sin_lookup(v->phase) * 0.9f + 0.1f * sin_lookup(v->phase * 3);
@@ -228,6 +236,7 @@ void music_render(int16_t *out, int n)
             counter += samples_per_step;
         }
         counter -= 1;
+        if (pending_in > 0 && --pending_in == 0) play_voice(SQUARE, pending_f, 0.06f, 0.28f, 0.2f);
         float l = 0, r = 0, el = 0, er = 0;
         for (int i = 0; i < NVOICES; i++) {
             voice_t *v = &voices[i];

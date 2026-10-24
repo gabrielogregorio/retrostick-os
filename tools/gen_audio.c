@@ -48,15 +48,17 @@ int main(int argc, char **argv)
     printf("8-bit music: gain %.3f\n", gain);
     if (write_file(dir, "music-intro.pcm", intro, ni * 4) || write_file(dir, "music-loop.pcm", buf, nl * 4)) return 1;
     /* effects: one at a time, no music, fixed length and a soft 120 ms fade-out (no click at the cut) */
-    static const struct { int sfx; const char *name; int ms; } EFFECTS[] = {
-        {SFX_SYSTEM, "sfx-h.pcm", 900}, {SFX_MOVE, "sfx-v.pcm", 350}, {SFX_OPEN, "sfx-a.pcm", 1200},
-        {SFX_BACK, "sfx-b.pcm", 600}};
+    /* gain: horizontal -50 %, vertical and click -40 % */
+    static const struct { int sfx; const char *name; int ms; float gain; } EFFECTS[] = {
+        {SFX_SYSTEM, "sfx-h.pcm", 400, 0.5f}, {SFX_MOVE, "sfx-v.pcm", 350, 0.6f},
+        {SFX_OPEN, "sfx-a.pcm", 1200, 0.6f}, {SFX_BACK, "sfx-b.pcm", 600, 1.0f}};
     for (int i = 0; i < 4; i++) {
         music_init(SAMPLE_RATE);
         music_effects_only(1);
         music_effect(EFFECTS[i].sfx);
         int n = SAMPLE_RATE * EFFECTS[i].ms / 1000, fade = SAMPLE_RATE * 120 / 1000;
         music_render(buf, n);
+        for (int k = 0; k < n * 2; k++) buf[k] = (int16_t)(buf[k] * EFFECTS[i].gain);
         for (int k = n - fade; k < n; k++)
             for (int c = 0; c < 2; c++) buf[k * 2 + c] = (int16_t)(buf[k * 2 + c] * (n - k) / fade);
         if (write_file(dir, EFFECTS[i].name, buf, n * 4)) return 1;

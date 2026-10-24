@@ -194,7 +194,11 @@ typedef struct {
     uint32_t cover[COVER_W * COVER_H];
     char year[8], genre[48], dev[64], desc[700];
 } game_details_t;
-static game_details_t details = {-1, -1};
+/* cache of 4 game details: the current one and its preloaded neighbors (the cover shows up instantly, no flicker) */
+static game_details_t details_cache[4] = {{-1, -1}, {-1, -1}, {-1, -1}, {-1, -1}};
+static game_details_t *cur_details = &details_cache[0];
+#define details (*cur_details)
+static void invalidate_details(void) { for (int i = 0; i < 4; i++) details_cache[i].sys = details_cache[i].sel = -1; }
 
 static void rom_basename(const char *file, char *out, int max)
 {
@@ -210,9 +214,28 @@ static void read_line(FILE *f, char *out, int max)
     out[strcspn(out, "\r\n")] = 0;
 }
 
-static void load_details(int si, int sel)
+static void load_into(game_details_t *fx, int si, int sel);
+
+/* find in the cache (or load into a free slot) without changing the current details */
+static game_details_t *find_details(int si, int sel)
 {
-    if (details.sys == si && details.sel == sel) return;
+    static unsigned usage[4], tick;
+    int free_slot = -1;
+    for (int i = 0; i < 4; i++) {
+        if (details_cache[i].sys == si && details_cache[i].sel == sel) { usage[i] = ++tick; return &details_cache[i]; }
+        if (&details_cache[i] != cur_details && (free_slot < 0 || usage[i] < usage[free_slot])) free_slot = i;
+    }
+    load_into(&details_cache[free_slot], si, sel);
+    usage[free_slot] = ++tick;
+    return &details_cache[free_slot];
+}
+
+static void load_details(int si, int sel) { cur_details = find_details(si, sel); }
+
+static void load_into(game_details_t *fx, int si, int sel)
+{
+#undef details
+#define details (*fx)
     details.sys = si; details.sel = sel; details.has_cover = 0;
     details.year[0] = details.genre[0] = details.dev[0] = details.desc[0] = 0;
     system_t *s = &SYSTEMS[si];
@@ -250,6 +273,8 @@ static void load_details(int si, int sel)
         details.has_cover = 1;
     }
     fclose(f);
+#undef details
+#define details (*cur_details)
 }
 
 /* trims the text with "..." to fit in max pixels */
@@ -383,9 +408,11 @@ static void draw_static(system_t *s, const input_t *e)
         int lw = 288; /* list column width */
         float top = s->scroll;
         int first = (int)top;
+        /* rows entering and leaving at the edge appear clipped, so they do not vanish and "flicker" while scrolling */
+        gfx_clip_y(py + 3, py + ph - 3);
         for (int i = first; i < s->n && i < first + 6; i++) {
             int y = py + 8 + (int)((i - top) * line);
-            if (y < py + 2 || y > py + ph - line) continue;
+            if (y < py - line || y > py + ph) continue;
             int selected = i == s->sel;
             if (selected) aero_pill(px + 8, y, lw, line - 2, 12, 0x1ea8f0, 255);
             char nm[128], dir[16];
@@ -407,6 +434,7 @@ static void draw_static(system_t *s, const input_t *e)
             if (selected) aero_text(&font_small, px + 20, y + 18, t, 0xffffff, 255);
             else gfx_text(&font_small, px + 20, y + 18, t, 0x163a5c, 255);
         }
+        gfx_clip_y(0, SCREEN_H);
         /* cover */
         int cx = px + lw + 18, cy = py + (ph - COVER_H) / 2;
         load_details(s - SYSTEMS, s->sel);
@@ -611,8 +639,9 @@ int main(void)
         } else if (!t_launch) {
             if (pressed & (BTN_RIGHT | BTN_R)) { sel = (sel + 1) % NUM_SYSTEMS; play_sfx(SFX_SYSTEM); }
             if (pressed & (BTN_LEFT | BTN_L)) { sel = (sel + NUM_SYSTEMS - 1) % NUM_SYSTEMS; play_sfx(SFX_SYSTEM); }
-            if (pressed & BTN_DOWN && s->sel < s->n - 1) { s->sel++; play_sfx(SFX_MOVE); }
-            if (pressed & BTN_UP && s->sel > 0) { s->sel--; play_sfx(SFX_MOVE); }
+            /* list wraps: up from the first goes to the last, down from the last goes back to the first */
+            if (pressed & BTN_DOWN && s->n) { s->sel = s->sel < s->n - 1 ? s->sel + 1 : 0; play_sfx(SFX_MOVE); }
+            if (pressed & BTN_UP && s->n) { s->sel = s->sel > 0 ? s->sel - 1 : s->n - 1; play_sfx(SFX_MOVE); }
             if (pressed & BTN_SELECT) { diag = 1; play_sfx(SFX_OPEN); }
             if (pressed & BTN_Y && s->n) {
                 char dir[16];
@@ -625,10 +654,11 @@ int main(void)
                 int added = toggle_favorite(dir, file_copy);
                 snprintf(notice, sizeof notice, added ? "%s added to favorites" : "%s removed from favorites", nm);
                 t_notice = now;
-                details.sys = -1; /* the favorites list may have changed order */
+                invalidate_details(); /* the favorites list may have changed order */
                 play_sfx(added ? SFX_OPEN : SFX_BACK);
             }
-            if (pressed & BTN_A && s->n) {
+            /* A opens the game only on its own: the right analog stick turns into A/B/X/Y, and on a diagonal sends A+B together */
+            if (pressed & BTN_A && !(bt & (BTN_B | BTN_X | BTN_Y)) && s->n) {
                 char nm[128], dir[16];
                 const char *file;
                 real_game(s, s->sel, dir, sizeof dir, &file);
@@ -695,6 +725,12 @@ int main(void)
             if (++draw_count == 30) { plat_log("ms per frame: draw %d", draw_sum / 30); draw_sum = draw_count = 0; }
             plat_present(screen);
             frames++;
+            /* preload the neighboring details (one per frame, only if not in the cache) */
+            system_t *a = &SYSTEMS[sel];
+            if (a->n > 1 && !diag) {
+                find_details(sel, (a->sel + 1) % a->n);
+                find_details(sel, (a->sel + a->n - 1) % a->n);
+            }
         }
         if (now - t_fps >= 5000) {
             plat_log("fps %d over 5 s", frames * 1000 / (int)(now - t_fps));

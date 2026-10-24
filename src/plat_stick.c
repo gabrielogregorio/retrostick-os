@@ -161,8 +161,9 @@ static void compute_area(int W, int H)
 {
     sw = W; sh = W * SCREEN_H / SCREEN_W;
     if (sh > H) { sh = H; sw = H * SCREEN_W / SCREEN_H; }
-    /* fits without stretching? goes out 1:1 (fewer pixels to write and direct conversion, no table) */
-    if (W >= SCREEN_W && H >= SCREEN_H) { sw = SCREEN_W; sh = SCREEN_H; }
+    /* full-screen menu (1:1 or 720x405 would leave black bars): stretches to W x H.
+     * On a 16:9 TV 720x480 is anamorphic, so the menu's 16:9 comes out in the right proportion. */
+    sw = W; sh = H;
     ox = ((W - sw) / 2) & ~1; oy = (H - sh) / 2; /* even ox: the conversion writes 2 pixels at a time */
     map_x = malloc(sw * sizeof(int));
     for (int x = 0; x < sw; x++) map_x[x] = x * SCREEN_W / sw;
@@ -250,13 +251,24 @@ void plat_present(const uint32_t *t)
                                 (((b >> 8) & 0xf800) | ((b >> 5) & 0x07e0) | ((b >> 3) & 0x001f)) << 16;
                 }
             }
-        } else
-        for (int y = 0; y < sh; y++) {
-            const uint32_t *src = t + (y * SCREEN_H / sh) * SCREEN_W;
-            uint16_t *d = base + (oy + y) * res[0] + ox;
-            for (int x = 0; x < sw; x++) {
-                uint32_t c = src[map_x[x]];
-                d[x] = ((c >> 8) & 0xf800) | ((c >> 5) & 0x07e0) | ((c >> 3) & 0x001f);
+        } else {
+            /* stretched: each source line becomes RGB565 once (2 pixels at a time), then only the table
+             * spreads it across the width; a repeated destination line (360 -> 480) is a copy of the previous one */
+            static uint16_t lin565[SCREEN_W];
+            int prev = -1;
+            for (int y = 0; y < sh; y++) {
+                int sy = y * SCREEN_H / sh;
+                uint16_t *d = base + (oy + y) * res[0] + ox;
+                if (sy == prev) { memcpy(d, d - res[0], sw * 2); continue; }
+                const uint32_t *src = t + sy * SCREEN_W;
+                uint32_t *l2 = (uint32_t *)lin565;
+                for (int x = 0; x < SCREEN_W; x += 2) {
+                    uint32_t a = src[x], b = src[x + 1];
+                    l2[x >> 1] = (((a >> 8) & 0xf800) | ((a >> 5) & 0x07e0) | ((a >> 3) & 0x001f)) |
+                                 (((b >> 8) & 0xf800) | ((b >> 5) & 0x07e0) | ((b >> 3) & 0x001f)) << 16;
+                }
+                for (int x = 0; x < sw; x++) d[x] = lin565[map_x[x]];
+                prev = sy;
             }
         }
         uint32_t t1 = plat_ms();
