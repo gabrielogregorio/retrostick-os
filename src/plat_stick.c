@@ -152,7 +152,7 @@ static long log_bytes;
 /* logs to STICK_LOG each packet that CHANGED (button map and controller 2) */
 static void log_packet(int j, const uint8_t *p, uint32_t now)
 {
-    if (!logf || log_bytes > 400000 || in_game) return; /* in game, no writing to the card on each button */
+    if (!logf || log_bytes > 1500000 || in_game) return; /* in game, no writing to the card on each button */
     log_bytes += fprintf(logf, "t=%u P%d %02X %02X %02X %02X %02X %02X %02X %02X %02X\n", now, j + 1, p[0], p[1],
                          p[2], p[3], p[4], p[5], p[6], p[7], p[8]);
 }
@@ -313,19 +313,31 @@ static void read_serial(input_t *e, uint32_t now)
         if (n > 0) rx.n += n;
     }
     int i = 0;
+    /* bytes outside the known format also go to the log ("raw:"): if the controller's ANALOG mode sends
+     * a different packet, it shows up here instead of vanishing silently */
+    static uint8_t stray[48];
+    static int nstray;
+    static long log_stray;
+#define DISCARD() do { if (nstray < (int)sizeof stray) stray[nstray++] = p[0]; i++; } while (0)
     while (rx.n - i >= 9) {
         uint8_t *p = rx.buf + i;
-        if (p[0] != 0x0a || p[1] != 0x09) { i++; continue; }
+        if (p[0] != 0x0a || p[1] != 0x09) { DISCARD(); continue; }
         uint8_t x = 0;
         for (int k = 0; k < 8; k++) x ^= p[k];
-        if ((uint8_t)~(x ^ 0x5a) != p[8] || (p[2] != 2 && p[2] != 3)) { i++; continue; }
+        if ((uint8_t)~(x ^ 0x5a) != p[8] || (p[2] != 2 && p[2] != 3)) { DISCARD(); continue; }
+        if (nstray && logf && !in_game && log_stray < 200000) {
+            log_stray += fprintf(logf, "t=%u raw:", now);
+            for (int k = 0; k < nstray; k++) log_stray += fprintf(logf, " %02X", stray[k]);
+            log_stray += fprintf(logf, "%s\n", nstray == (int)sizeof stray ? " ..." : "");
+        }
+        nstray = 0;
         int j = p[2] - 2;
         uint32_t m = 0;
         for (int b = 0; b < 8; b++) if (p[6] & (1 << b)) m |= BUTTON_MAP[b];
         for (int b = 0; b < 5; b++) if (p[7] & (1 << b)) m |= BUTTON_MAP[8 + b];
         bt[j] = m;
         /* logs the first 30 of each player and, after that, whenever any byte from 3 to 7
-         * changes (buttons and possible analog values); the 400 KB cap holds back noise */
+         * changes (buttons and possible analog values); the 1.5 MB cap holds back noise */
         static int counted[2];
         if (counted[j] < 30 || memcmp(raw[j] + 3, p + 3, 5)) { log_packet(j, p, now); counted[j]++; }
         memcpy(raw[j], p, 9);
@@ -334,6 +346,14 @@ static void read_serial(input_t *e, uint32_t now)
     }
     memmove(rx.buf, rx.buf + i, rx.n - i);
     rx.n -= i;
+    /* in the menu, the controller log goes to the card every 2 s if there is anything new (turning the stick off
+     * does not lose it); in game never (each fsync costs ~20 ms) */
+    static long last_bytes;
+    static uint32_t last_sync;
+    if (logf && !in_game && log_bytes + log_stray != last_bytes && now - last_sync > 2000) {
+        fflush(logf); fsync(fileno(logf));
+        last_bytes = log_bytes + log_stray; last_sync = now;
+    }
     for (int j = 0; j < 2; j++) {
         e->present[j] = rx.seen[j] && now - rx.seen[j] < 500;
         e->bt[j] = e->present[j] ? bt[j] : 0;
