@@ -55,6 +55,7 @@ static uint32_t key_to_button(SDL_Keycode k)
     case SDLK_w: return BTN_R;
     case SDLK_RSHIFT: return BTN_SELECT;
     case SDLK_RETURN: return BTN_START;
+    case SDLK_m: return BTN_MODE;
     case SDLK_ESCAPE: return BTN_QUIT;
     }
     return 0;
@@ -69,6 +70,7 @@ static uint32_t pad_bt(SDL_GameController *g)
         {SDL_CONTROLLER_BUTTON_X, BTN_X}, {SDL_CONTROLLER_BUTTON_Y, BTN_Y},
         {SDL_CONTROLLER_BUTTON_LEFTSHOULDER, BTN_L}, {SDL_CONTROLLER_BUTTON_RIGHTSHOULDER, BTN_R},
         {SDL_CONTROLLER_BUTTON_BACK, BTN_SELECT}, {SDL_CONTROLLER_BUTTON_START, BTN_START},
+        {SDL_CONTROLLER_BUTTON_GUIDE, BTN_MODE},
     };
     uint32_t m = 0;
     for (unsigned i = 0; i < sizeof M / sizeof M[0]; i++)

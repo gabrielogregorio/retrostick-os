@@ -1,11 +1,15 @@
 /* Game runner: a statically linked libretro core + the same platform as the menu.
  * Usage: nes-<arch> <game file> [saves folder]
- * Quit the game: hold SELECT + START for 1 s (Esc too on the PC). */
+ * Quit the game: hold SELECT + START for 1 s (Esc too on the PC), or MODE > Quit game.
+ * MODE opens the pause menu: save and load state in 2 slots, and back to the last save (includes the
+ * automatic save made when quitting the game). */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "libretro.h"
+#include "pause.h"
 #include "plat.h"
 
 static input_t input;
@@ -66,11 +70,22 @@ static bool environment(unsigned cmd, void *data)
 /* instrumentation: where each frame's time goes */
 static uint32_t ms_video, ms_audio, samples;
 
+/* copy of the last drawn frame (pause menu background; the core's buffer may change later) */
+#define LAST_MAX (512 * 480)
+static uint16_t last_frame[LAST_MAX];
+static int last_w, last_h;
+
 static void video(const void *px, unsigned w, unsigned h, size_t pitch)
 {
     uint32_t t = plat_ms();
     if (px) drew = 1; /* skipped frame (null px or no call): neither draws nor waits for the TV */
-    if (px) plat_present_565(px, w, h, pitch / 2);
+    if (px) {
+        plat_present_565(px, w, h, pitch / 2);
+        if (w * h <= LAST_MAX) {
+            for (unsigned y = 0; y < h; y++) memcpy(last_frame + y * w, (const uint8_t *)px + y * pitch, w * 2);
+            last_w = w; last_h = h;
+        }
+    }
     ms_video += plat_ms() - t;
 }
 
@@ -214,6 +229,141 @@ static void sram(const char *rom, int writing)
     fclose(f);
 }
 
+/* ---- save states: <saves>/<game>.st1 and .st2 (slots), .sta (automatic on quit), .last (which was the latest) ---- */
+static const char *current_rom;
+
+static void state_path(char *out, int max, const char *ext)
+{
+    save_path(out, max, current_rom);
+    char *p = strrchr(out, '.');
+    if (p) strcpy(p, ext);
+}
+
+static int exists(const char *ext)
+{
+    char path[600];
+    state_path(path, sizeof path, ext);
+    FILE *f = fopen(path, "rb");
+    if (f) fclose(f);
+    return f != NULL;
+}
+
+/* slot: '1', '2' or 'a' (automatic). 0 = ok */
+static int save_state(char slot)
+{
+    size_t n = retro_serialize_size();
+    void *b = n ? malloc(n) : NULL;
+    if (!b || !retro_serialize(b, n)) { free(b); return -1; }
+    char path[600], ext[5] = {'.', 's', 't', slot == 'a' ? 'a' : slot, 0};
+    state_path(path, sizeof path, ext);
+    FILE *f = fopen(path, "wb");
+    int ok = f && fwrite(b, 1, n, f) == n;
+    if (f) { fflush(f); fsync(fileno(f)); fclose(f); }
+    free(b);
+    if (!ok) return -1;
+    state_path(path, sizeof path, ".last");
+    if ((f = fopen(path, "w"))) { fputc(slot, f); fflush(f); fsync(fileno(f)); fclose(f); }
+    plat_log("pause: state saved, slot %d", slot);
+    return 0;
+}
+
+static int load_state(char slot)
+{
+    char path[600], ext[5] = {'.', 's', 't', slot == 'a' ? 'a' : slot, 0};
+    state_path(path, sizeof path, ext);
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    fseek(f, 0, SEEK_END);
+    long n = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    void *b = n > 0 ? malloc(n) : NULL;
+    int ok = b && fread(b, 1, n, f) == (size_t)n && retro_unserialize(b, n);
+    fclose(f);
+    free(b);
+    plat_log("pause: state loaded %d", ok);
+    return ok ? 0 : -1;
+}
+
+static char last_slot(void)
+{
+    char path[600];
+    state_path(path, sizeof path, ".last");
+    FILE *f = fopen(path, "r");
+    int c = f ? fgetc(f) : 0;
+    if (f) fclose(f);
+    return c == '1' || c == '2' || c == 'a' ? (char)c : 0;
+}
+
+/* silence in the device queue while the game is stopped (an empty queue replays old leftovers) */
+static void idle_audio(void)
+{
+    static int16_t zero[512 * 2];
+    if (!audio_ok) return;
+    int queue = plat_audio_queue();
+    while (queue >= 0 && queue < 4000) {
+        int sent = plat_audio(zero, 512);
+        if (sent <= 0) break;
+        queue += sent;
+    }
+}
+
+/* pause menu. Returns 1 if the player chose to quit the game. */
+static int pause_menu(void)
+{
+    enum { RESUME, SAVE1, SAVE2, LOAD1, LOAD2, LAST, QUIT, N };
+    static const char *const ITEMS[N] = {"Resume", "Save to slot 1", "Save to slot 2", "Load slot 1",
+                                         "Load slot 2", "Back to last save", "Quit game"};
+    int sel = 0, quit = 0, redraw = 1;
+    char notice[64] = "";
+    uint32_t prev = BTN_MODE, t_close = 0; /* the MODE that opened it is still held */
+    plat_log("pause: menu opened", 0);
+    for (;;) {
+        idle_audio();
+        poll_input();
+        uint32_t bt = input.bt[0] | input.bt[1], pressed = bt & ~prev, now = plat_ms();
+        prev = bt;
+        if (t_close && (int32_t)(now - t_close) >= 0) break;
+        if (bt & BTN_QUIT) { quit = 1; break; }
+        if (!t_close) {
+            if (pressed & (BTN_B | BTN_MODE)) break;
+            if (pressed & BTN_DOWN) { sel = (sel + 1) % N; redraw = 1; }
+            if (pressed & BTN_UP) { sel = (sel + N - 1) % N; redraw = 1; }
+            if (pressed & BTN_A && !(bt & (BTN_B | BTN_X | BTN_Y))) {
+                int r = 0;
+                switch (sel) {
+                case RESUME: t_close = now; break;
+                case SAVE1: case SAVE2:
+                    r = save_state(sel == SAVE1 ? '1' : '2');
+                    snprintf(notice, sizeof notice, r ? "Could not save" : "Saved to slot %d", sel == SAVE1 ? 1 : 2);
+                    if (!r) t_close = now + 700;
+                    break;
+                case LOAD1: case LOAD2: case LAST: {
+                    char s = sel == LOAD1 ? '1' : sel == LOAD2 ? '2' : last_slot();
+                    r = s ? load_state(s) : -1;
+                    if (r) snprintf(notice, sizeof notice, s ? "Could not load" : "No save yet");
+                    else t_close = now;
+                    break;
+                }
+                case QUIT: quit = 1; break;
+                }
+                if (quit) break;
+                redraw = 1;
+            }
+        }
+        if (redraw) {
+            char u = last_slot();
+            const char *notes[N] = {"", exists(".st1") ? "in use" : "empty", exists(".st2") ? "in use" : "empty",
+                                    exists(".st1") ? "" : "empty", exists(".st2") ? "" : "empty",
+                                    u == '1' ? "slot 1" : u == '2' ? "slot 2" : u == 'a' ? "from last quit" : "none", ""};
+            pause_draw(last_w ? last_frame : NULL, last_w, last_h, ITEMS, notes, N, sel, notice);
+            redraw = 0;
+        }
+        plat_sleep(16);
+    }
+    plat_log("pause: menu closed, quit %d", quit);
+    return quit;
+}
+
 int main(int argc, char **argv)
 {
     if (argc < 2) { fprintf(stderr, "usage: %s game [saves folder]\n", argv[0]); return 2; }
@@ -247,6 +397,7 @@ int main(int argc, char **argv)
     struct retro_game_info game = {argv[1], data, (size_t)size, NULL};
     if (!retro_load_game(&game)) { fprintf(stderr, "core refused the game\n"); return 1; }
     sram(argv[1], 0);
+    current_rom = argv[1];
 
     struct retro_system_av_info av;
     retro_get_system_av_info(&av);
@@ -298,6 +449,18 @@ int main(int argc, char **argv)
         frames++;
         uint32_t bt = input.bt[0] | input.bt[1], now = plat_ms();
         if (bt & BTN_QUIT) break;
+        /* MODE: pause menu (the game stops; on return the reference clock restarts, with no burst of skips) */
+        static uint32_t prev_mode;
+        if (bt & BTN_MODE & ~prev_mode) {
+            prev_mode = bt;
+            if (pause_menu()) break;
+            t_ref = 0; next = plat_us(); t_quit = 0;
+            /* statistics restart (stopped time does not count toward the logged fps) */
+            frames = 0; t_fps = plat_ms(); ms_run = ms_video = ms_audio = samples = 0; skipped_frames = 0;
+            prev_mode = BTN_MODE;
+            continue;
+        }
+        prev_mode = bt;
         if ((bt & (BTN_SELECT | BTN_START)) == (BTN_SELECT | BTN_START)) {
             if (!t_quit) t_quit = now;
             else if (now - t_quit > 1000) break;
@@ -334,6 +497,7 @@ int main(int argc, char **argv)
         }
     }
     sram(argv[1], 1);
+    save_state('a'); /* automatic "last save" on quit */
     retro_unload_game();
     retro_deinit();
     plat_shutdown();

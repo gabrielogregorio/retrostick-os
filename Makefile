@@ -23,16 +23,20 @@ LRINC := -Icores/fceumm/src/drivers/libretro/libretro-common/include
 out/nes-pc: src/runner.c src/plat_sdl.c src/*.h out/pc/libquicknes.a
 	c++ -x c $(CFLAGS) $(LRINC) -c src/runner.c -o out/pc/runner.o
 	c++ -x c $(CFLAGS) $$(sdl2-config --cflags) -c src/plat_sdl.c -o out/pc/plat_sdl.o
-	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/libquicknes.a -o $@ $$(sdl2-config --libs) -lm
+	c++ -x c $(CFLAGS) -c src/pause.c -o out/pc/pause.o
+	c++ -x c $(CFLAGS) -c src/gfx.c -o out/pc/gfx.o
+	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/pause.o out/pc/gfx.o out/pc/libquicknes.a -o $@ $$(sdl2-config --libs) -lm
 
 out/nes-arm: src/runner.c src/plat_stick.c src/*.h out/arm/libquicknes.a
 	$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c src/runner.c -o out/arm/runner.o
 	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/plat_stick.c -o out/arm/plat_stick.o
-	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/libquicknes.a -o $@ -lm
+	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/pause.c -o out/arm/pause.o
+	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/gfx.c -o out/arm/gfx.o
+	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/pause.o out/arm/gfx.o out/arm/libquicknes.a -o $@ -lm
 
 out/nes-fceumm-arm: src/runner.c src/plat_stick.c src/*.h out/arm/libfceumm.a
 	$(CROSS)gcc $(CFLAGS) $(LRINC) $(ARMF) -static -no-pie -s \
-		src/runner.c src/plat_stick.c out/arm/libfceumm.a -o $@ -lm
+		src/runner.c src/plat_stick.c src/pause.c src/gfx.c out/arm/libfceumm.a -o $@ -lm
 
 out/pc/libquicknes.a:
 	$(MAKE) -f cores/quicknes.mk ARCH=pc -j8
@@ -60,12 +64,16 @@ SYSTEMS := snes md sms gba gb gg a26 ngp ws
 out/%-arm: src/runner.c src/plat_stick.c src/*.h out/arm/lib$$(EMU_$$*).a
 	$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c src/runner.c -o out/arm/runner.o
 	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/plat_stick.c -o out/arm/plat_stick.o
-	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/lib$(EMU_$*).a -o $@ -lm
+	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/pause.c -o out/arm/pause.o
+	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/gfx.c -o out/arm/gfx.o
+	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/pause.o out/arm/gfx.o out/arm/lib$(EMU_$*).a -o $@ -lm
 
 out/%-pc: src/runner.c src/plat_sdl.c src/*.h out/pc/lib$$(EMU_$$*).a
 	c++ -x c $(CFLAGS) $(LRINC) -c src/runner.c -o out/pc/runner.o
 	c++ -x c $(CFLAGS) $$(sdl2-config --cflags) -c src/plat_sdl.c -o out/pc/plat_sdl.o
-	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/lib$(EMU_$*).a -o $@ $$(sdl2-config --libs) -lm -lz
+	c++ -x c $(CFLAGS) -c src/pause.c -o out/pc/pause.o
+	c++ -x c $(CFLAGS) -c src/gfx.c -o out/pc/gfx.o
+	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/pause.o out/pc/gfx.o out/pc/lib$(EMU_$*).a -o $@ $$(sdl2-config --libs) -lm -lz
 
 out/arm/libpicodrive.a:
 	$(MAKE) -f cores/picodrive.mk ARCH=arm

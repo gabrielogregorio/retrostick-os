@@ -59,6 +59,7 @@ static int *map_x;
 static const uint32_t *last_screen;
 static const char *sim_keys;
 static int frame_count;
+static int clear_565; /* plat_present drew on top (pause menu): the next game frame clears the borders */
 static int in_game; /* 1 after the first core frame (plat_present_565) */
 static int vsync = 1; /* wait for the TV retrace on each game frame (STICK_VSYNC=0 disables it) */
 
@@ -67,7 +68,7 @@ static int vsync = 1; /* wait for the TV retrace on each game frame (STICK_VSYNC
  * B7.4 is the MODE button: it changes no mode, so it is free. L3 and R3 do not arrive. */
 static const uint32_t BUTTON_MAP[13] = {
     BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_Y, BTN_X, /* B6.0 .. B6.7 */
-    BTN_START, BTN_SELECT, BTN_L, BTN_R, 0, /* B7.0 .. B7.4 (B7.4 = MODE, unused) */
+    BTN_START, BTN_SELECT, BTN_L, BTN_R, BTN_MODE, /* B7.0 .. B7.4 (B7.4 = MODE) */
 };
 
 static struct { uint8_t buf[256]; int n; uint32_t seen[2]; } rx;
@@ -235,6 +236,7 @@ void plat_shutdown(void)
 void plat_present(const uint32_t *t)
 {
     last_screen = t;
+    clear_565 = 1;
     frame_count++;
     if (disp >= 0) {
         uint32_t t0 = plat_ms();
@@ -363,14 +365,16 @@ static void read_serial(input_t *e, uint32_t now)
 
 static uint32_t simulated_key(void)
 {
-    int idx = frame_count / 15, mid = frame_count % 15;
+    static int reads; /* counts input reads (also advances with the game paused, with no new frame) */
+    int q = reads++;
+    int idx = q / 15, mid = q % 15;
     const char *p = sim_keys;
     for (int k = 0; *p && k < idx; p++)
         if (*p == ',') k++;
     if (!*p) {
         int n = 1;
         for (const char *q = sim_keys; *q; q++) n += *q == ',';
-        return frame_count > n * 15 + 30 ? BTN_QUIT : 0;
+        return q > n * 15 + 30 ? BTN_QUIT : 0;
     }
     if (mid > 3) return 0; /* release between keys */
     switch (*p) {
@@ -384,6 +388,7 @@ static uint32_t simulated_key(void)
     case 'B': return BTN_B;
     case 'S': return BTN_SELECT;
     case 'T': return BTN_START;
+    case 'M': return BTN_MODE;
     }
     return 0;
 }
@@ -447,6 +452,11 @@ void plat_present_565(const uint16_t *px, int w, int h, int pitch_px)
         mw565 = w; mh565 = h;
         memset(bm[0].data, 0, res[0] * res[1] * 2);
         memset(bm[1].data, 0, res[0] * res[1] * 2);
+    }
+    if (clear_565) {
+        memset(bm[0].data, 0, res[0] * res[1] * 2);
+        memset(bm[1].data, 0, res[0] * res[1] * 2);
+        clear_565 = 0;
     }
     cur ^= 1;
     uint16_t *base = bm[cur].data;
