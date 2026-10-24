@@ -33,6 +33,8 @@ static float midi_hz(int n) { return 440.0f * powf(2.0f, (n - 69) / 12.0f); }
 static float echo_l[ECHO_MAX], echo_r[ECHO_MAX];
 static int echo_pos, echo_len;
 
+static int in_effect; /* 1 while play_voice() is called by an effect */
+
 static void play_voice(int type, float f, float secs, float amp, float pan)
 {
     int k = 0;
@@ -59,6 +61,7 @@ static void play_voice(int type, float f, float secs, float amp, float pan)
     case BUBBLE:  v->attack = 0.002f; v->dec = expf(-s / 0.045f); v->release = v->dec; v->echo = 0.25f; break;
     case BREATH:  v->attack = secs * 0.4f; v->dec = expf(-s / 0.3f); v->release = expf(-s / 0.12f); v->echo = 0.4f; v->dur = (int)(secs * 0.4f * rate); break;
     }
+    if (in_effect) v->echo = 0; /* dry effects: a bell echo would come back 500 ms later like a second hit */
 }
 
 /* ---------- the music ---------- */
@@ -93,7 +96,8 @@ static const int8_t MEL[16][6][3] = {
 
 static double samples_per_step, counter;
 static int no_music;
-static float pending_f; static int pending_in; /* scheduled note of the horizontal effect */ /* effects only (to record the effect files) */
+#define NPEND 4
+static float pending_f[NPEND], pending_a[NPEND]; static int pending_in[NPEND]; /* scheduled notes of the 8-bit effects */
 static int current_step, loop_no;
 static float master, master_target = 1;
 
@@ -143,21 +147,36 @@ void music_init(int t)
     echo_len = (int)(samples_per_step * 6);
     if (echo_len > ECHO_MAX) echo_len = ECHO_MAX;
     counter = 0; current_step = 0; loop_no = 0; master = 0;
+    /* clear voices and echo: the generator records one effect after another and the echo of one must not leak into the next */
+    memset(voices, 0, sizeof voices); memset(echo_l, 0, sizeof echo_l); memset(echo_r, 0, sizeof echo_r);
+    echo_pos = 0; memset(pending_in, 0, sizeof pending_in);
 }
 
 void music_volume(float v) { master_target = v; }
 void music_effects_only(int on) { no_music = on; if (on) master = master_target = 1; }
 
+/* square note that starts `delay` seconds later (multi-note effects) */
+static void schedule(float f, float delay, float amp)
+{
+    for (int i = 0; i < NPEND; i++)
+        if (pending_in[i] <= 0) { pending_f[i] = f; pending_a[i] = amp; pending_in[i] = (int)(delay * rate); return; }
+}
+
 void music_effect(int which)
 {
+    in_effect = 1;
     switch (which) {
     case SFX_MOVE: /* vertical: short bubble "plop" rising in pitch */
         play_voice(BUBBLE, 620, 0.09f, 0.16f, 0.15f);
         break;
     case SFX_SYSTEM: { /* horizontal: 8-bit "blip-blip", two fast rising notes (E6 -> B6) */
         play_voice(SQUARE, 1318.5f, 0.045f, 0.28f, -0.2f);
-        int delay = (int)(0.05f * rate); /* the second note starts 50 ms later */
-        pending_f = 1975.5f; pending_in = delay;
+        schedule(1975.5f, 0.05f, 0.28f); /* the second note starts 50 ms later */
+        break;
+    }
+    case SFX_FAVORITE: { /* favorite: rising 8-bit item-pickup arpeggio (C6 E6 G6 C7), the last note longer */
+        play_voice(SQUARE, 1046.5f, 0.05f, 0.24f, 0);
+        schedule(1318.5f, 0.06f, 0.24f); schedule(1568.0f, 0.12f, 0.24f); schedule(2093.0f, 0.18f, 0.26f);
         break;
     }
     case SFX_OPEN: {
@@ -167,6 +186,7 @@ void music_effect(int which)
     }
     case SFX_BACK: play_voice(VIBES, 1480, 0.12f, 0.08f, 0.3f); play_voice(VIBES, 987.8f, 0.2f, 0.08f, -0.3f); break;
     }
+    in_effect = 0;
     /* the effect starts sounding in the next batch; the delay is that of the audio queue */
 }
 
@@ -236,7 +256,8 @@ void music_render(int16_t *out, int n)
             counter += samples_per_step;
         }
         counter -= 1;
-        if (pending_in > 0 && --pending_in == 0) play_voice(SQUARE, pending_f, 0.06f, 0.28f, 0.2f);
+        for (int i = 0; i < NPEND; i++)
+            if (pending_in[i] > 0 && --pending_in[i] == 0) { in_effect = 1; play_voice(SQUARE, pending_f[i], 0.06f, pending_a[i], 0.2f); in_effect = 0; }
         float l = 0, r = 0, el = 0, er = 0;
         for (int i = 0; i < NVOICES; i++) {
             voice_t *v = &voices[i];

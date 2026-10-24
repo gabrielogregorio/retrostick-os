@@ -472,7 +472,7 @@ static void draw_static(system_t *s, const input_t *e)
 #define MENU_QUEUE 4000 /* ~83 ms in the device queue (fits in 32 x 1 KB) */
 static int audio_ok, audio_from_file;
 static FILE *f_intro, *f_loop, *f_current;
-static struct { int16_t *d; int n; } sfx[4];      /* SFX_MOVE, SFX_SYSTEM, SFX_OPEN, SFX_BACK */
+static struct { int16_t *d; int n; } sfx[SFX_COUNT];   /* in SFX_* enum order */
 static struct { int id, pos; } playing[4];        /* effects sounding now (pos < 0 = free) */
 static float music_vol = 0, target_vol = 1;
 
@@ -488,10 +488,10 @@ static FILE *open_audio(const char *name)
 
 static void load_audio(void)
 {
-    static const char *SFX_FILES[4] = {"sfx-v.pcm", "sfx-h.pcm", "sfx-a.pcm", "sfx-b.pcm"};
+    static const char *SFX_FILES[SFX_COUNT] = {"sfx-v.pcm", "sfx-h.pcm", "sfx-a.pcm", "sfx-b.pcm", "sfx-f.pcm"};
     f_intro = open_audio("music-intro.pcm");
     f_loop = open_audio("music-loop.pcm");
-    for (int i = 0; i < 4; i++) {
+    for (int i = 0; i < SFX_COUNT; i++) {
         FILE *f = open_audio(SFX_FILES[i]);
         if (!f) continue;
         fseek(f, 0, SEEK_END);
@@ -510,6 +510,7 @@ static void load_audio(void)
 static void play_sfx(int which)
 {
     if (!audio_from_file) { music_effect(which); return; }
+    if (!sfx[which].n) return; /* SD card without a file for this effect */
     int k = 0;
     for (int i = 0; i < 4; i++) if (playing[i].pos < 0) { k = i; break; }
     playing[k].id = which; playing[k].pos = 0;
@@ -655,7 +656,7 @@ int main(void)
                 snprintf(notice, sizeof notice, added ? "%s added to favorites" : "%s removed from favorites", nm);
                 t_notice = now;
                 invalidate_details(); /* the favorites list may have changed order */
-                play_sfx(added ? SFX_OPEN : SFX_BACK);
+                play_sfx(added ? SFX_FAVORITE : SFX_BACK);
             }
             /* A opens the game only on its own: the right analog stick turns into A/B/X/Y, and on a diagonal sends A+B together */
             if (pressed & BTN_A && !(bt & (BTN_B | BTN_X | BTN_Y)) && s->n) {
@@ -679,7 +680,12 @@ int main(void)
                 fflush(stdout);
                 const char *r = plat_runner(dir);
                 if (r) {
-                    if (audio_ok) plat_audio_close(); /* the game needs /dev/dsp all to itself */
+                    if (audio_ok) { /* the game needs /dev/dsp all to itself; first, the queue drains in silence (nothing left playing on close) */
+                        static int16_t zero[MENU_QUEUE * 2];
+                        plat_audio(zero, MENU_QUEUE);
+                        for (uint32_t t = plat_ms(); plat_audio_queue() > 0 && plat_ms() - t < 300;) plat_ms();
+                        plat_audio_close();
+                    }
                     save_state(sel); /* on the stick the menu exits for good to open the game (all memory goes to the game) */
                     char path[600], saves[600];
                     snprintf(path, sizeof path, "%s/%s/%s", plat_roms_dir(), dir, file);
