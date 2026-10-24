@@ -64,10 +64,10 @@ static int vsync = 1; /* wait for the TV retrace on each game frame (STICK_VSYNC
 
 /* B6 bit (0..7) and B7 bit (8..12) -> button.
  * L2 and R2 arrive on the SAME bits as L1 and R1 (the receiver does not tell them apart).
- * B7.4 has no identified button: unused. */
+ * B7.4 is the MODE button: it changes no mode, so it is free. L3 and R3 do not arrive. */
 static const uint32_t BUTTON_MAP[13] = {
     BTN_UP, BTN_DOWN, BTN_LEFT, BTN_RIGHT, BTN_A, BTN_B, BTN_Y, BTN_X, /* B6.0 .. B6.7 */
-    BTN_START, BTN_SELECT, BTN_L, BTN_R, 0,                        /* B7.0 .. B7.4 */
+    BTN_START, BTN_SELECT, BTN_L, BTN_R, 0, /* B7.0 .. B7.4 (B7.4 = MODE, unused) */
 };
 
 static struct { uint8_t buf[256]; int n; uint32_t seen[2]; } rx;
