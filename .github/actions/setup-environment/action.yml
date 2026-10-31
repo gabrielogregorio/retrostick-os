@@ -9,7 +9,7 @@ runs:
         sudo apt-get update -qq
         sudo apt-get install -y -qq --no-install-recommends \
           build-essential libsdl2-dev zlib1g-dev fonts-noto-core shellcheck \
-          gcc-arm-linux-gnueabi qemu-user-static > /dev/null
+          gcc-arm-linux-gnueabi libc6-dev-armel-cross qemu-user-static > /dev/null
 
     - name: Python venv (pinned dev tools)
       shell: bash

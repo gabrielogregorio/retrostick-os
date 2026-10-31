@@ -57,7 +57,7 @@ jobs:
 
       - name: No ROM, firmware or core in the repo
         run: |
-          bad=$(git ls-files | grep -iE '\.(nes|sfc|smc|md|gen|gba|gb|gbc|sms|gg|a26|ngp|ngc|ws|wsc|ko|bin)$|^cores/.*/' || true)
+          bad=$(git ls-files | grep -iE '\.(nes|sfc|smc|gen|gba|gb|gbc|sms|gg|a26|ngp|ngc|ws|wsc|ko|bin)$|^cores/.*/|^roms/.*/' || true)
           if [[ -n "$bad" ]]; then
             echo "$bad" | while read -r f; do echo "::error file=$f::this file type must not be in the repo"; done
             exit 1
