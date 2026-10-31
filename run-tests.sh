@@ -24,6 +24,7 @@ if command -v shellcheck > /dev/null; then
 else
   RESULTS+=("SKIP  lint (shellcheck) - sudo apt install shellcheck")
 fi
+run_layer "lint   (clang-format)" bash -c "git ls-files '*.c' '*.h' | xargs \"$(dirname "$PY")/clang-format\" --dry-run -Werror"
 run_layer "unit   (C, ASan + UBSan)" make test-unit PY="$PY"
 run_layer "unit   (Python)" "$PY" -m pytest tests/python
 run_layer "e2e    (build)" make test-bins PY="$PY"

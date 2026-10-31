@@ -11,10 +11,7 @@ testpaths = ["tests/python", "tests/e2e"]
 addopts = "-q"
 
 [tool.ruff]
-line-length = 130
+line-length = 120
 
 [tool.ruff.lint]
-select = ["E9", "F", "W6", "B"]
-
-[tool.ruff.lint.per-file-ignores]
-"tools/re/*" = ["F403", "F405"]
+select = ["E", "F", "W", "B", "I", "UP"]

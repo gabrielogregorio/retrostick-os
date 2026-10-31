@@ -21,17 +21,14 @@ jobs:
       - name: Ruff
         run: .venv/bin/ruff check --output-format=github .
 
+      - name: C format
+        run: git ls-files '*.c' '*.h' | xargs .venv/bin/clang-format --dry-run -Werror
+
       - name: ShellCheck
         run: shellcheck --severity=warning ./*.sh tools/*.sh tools/re/*.sh card-base/retro/init
 
       - name: C builds without warnings
-        run: |
-          make src/font_data.h PY=.venv/bin/python
-          gcc -fsyntax-only -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers \
-            -Isrc $(sdl2-config --cflags) src/main.c src/gfx.c src/aero.c src/icons.c src/music.c src/chip.c \
-            src/pause.c src/plat_exec.c src/plat_sdl.c tools/gen_audio.c
-          gcc -fsyntax-only -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers \
-            -Isrc -Itests/mock src/runner.c tests/mock/mock_core.c
+        run: make check-warnings PY=.venv/bin/python
 
       - name: Scripts are executable in git
         run: |
