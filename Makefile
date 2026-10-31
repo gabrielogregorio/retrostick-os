@@ -17,9 +17,11 @@ src/font_data.h: tools/gen_font.py
 	$(PY) tools/gen_font.py
 
 out/menu-pc: $(SRC) src/plat_sdl.c src/*.h src/font_data.h
+	@mkdir -p out
 	cc $(CFLAGS) $(SRC) src/plat_sdl.c -o $@ $$(sdl2-config --cflags --libs) -lm
 
 out/menu-arm: $(SRC) src/plat_stick.c src/*.h src/font_data.h
+	@mkdir -p out
 	$(CROSS)gcc $(CFLAGS) -mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=softfp -static -no-pie -s \
 		$(SRC) src/plat_stick.c -o $@ -lm
 
@@ -29,6 +31,7 @@ LRINC := -Icores/fceumm/src/drivers/libretro/libretro-common/include
 # NES = QuickNES (light). FCEUmm stays as nes-fceumm-*, more accurate and heavier
 # (on the stick its emulation does not fit in the 16.6 ms of a frame at 60 Hz).
 out/nes-pc: src/runner.c src/plat_sdl.c src/*.h src/font_data.h out/pc/libquicknes.a
+	@mkdir -p out/pc
 	c++ -x c $(CFLAGS) $(LRINC) -c src/runner.c -o out/pc/runner.o
 	c++ -x c $(CFLAGS) $$(sdl2-config --cflags) -c src/plat_sdl.c -o out/pc/plat_sdl.o
 	c++ -x c $(CFLAGS) -c src/pause.c -o out/pc/pause.o
@@ -36,6 +39,7 @@ out/nes-pc: src/runner.c src/plat_sdl.c src/*.h src/font_data.h out/pc/libquickn
 	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/pause.o out/pc/gfx.o out/pc/libquicknes.a -o $@ $$(sdl2-config --libs) -lm
 
 out/nes-arm: src/runner.c src/plat_stick.c src/*.h src/font_data.h out/arm/libquicknes.a
+	@mkdir -p out/arm
 	$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c src/runner.c -o out/arm/runner.o
 	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/plat_stick.c -o out/arm/plat_stick.o
 	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/pause.c -o out/arm/pause.o
@@ -70,6 +74,7 @@ SYSTEMS := snes md sms gba gb gg a26 ngp ws
 
 .SECONDEXPANSION:
 out/%-arm: src/runner.c src/plat_stick.c src/*.h src/font_data.h out/arm/lib$$(EMU_$$*).a
+	@mkdir -p out/arm
 	$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c src/runner.c -o out/arm/runner.o
 	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/plat_stick.c -o out/arm/plat_stick.o
 	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/pause.c -o out/arm/pause.o
@@ -77,6 +82,7 @@ out/%-arm: src/runner.c src/plat_stick.c src/*.h src/font_data.h out/arm/lib$$(E
 	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/pause.o out/arm/gfx.o out/arm/lib$(EMU_$*).a -o $@ -lm
 
 out/%-pc: src/runner.c src/plat_sdl.c src/*.h src/font_data.h out/pc/lib$$(EMU_$$*).a
+	@mkdir -p out/pc
 	c++ -x c $(CFLAGS) $(LRINC) -c src/runner.c -o out/pc/runner.o
 	c++ -x c $(CFLAGS) $$(sdl2-config --cflags) -c src/plat_sdl.c -o out/pc/plat_sdl.o
 	c++ -x c $(CFLAGS) -c src/pause.c -o out/pc/pause.o
@@ -108,6 +114,7 @@ smoke-arm: out/menu-arm
 # make card -> out/card/retro ready to copy to the root of the SD card (FAT32 with a partition)
 # menu music, effects and background: computed on the PC, the stick only reads them (tools/gen_audio.c)
 out/gen-audio: tools/gen_audio.c src/music.c src/chip.c src/aero.c src/gfx.c src/*.h src/font_data.h
+	@mkdir -p out
 	cc $(CFLAGS) tools/gen_audio.c src/music.c src/chip.c src/aero.c src/gfx.c -o $@ -lm
 out/audio/aero-background.bin: out/gen-audio
 	mkdir -p out/audio && ./out/gen-audio out/audio
