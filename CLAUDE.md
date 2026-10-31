@@ -194,7 +194,7 @@ The saves folder is also what the runner reports to cores as the system director
 - `gp_audio.ko` outputs to **analog** by default. For HDMI use `ioctl(dsp, 0xc0045007, &1)` **before** `SETFRAGMENT`, plus volume on `/dev/mixer`.
 - Always **non-blocking** (`SNDCTL_DSP_NONBLOCK`; `O_NONBLOCK` on open is ignored), with dynamic rate control from the queue (`GETODELAY`, up to +/-0.8 %, target 2000 audio frames). The device opens at 48 kHz and the runner resamples each core's rate.
 - The ring is 32 x 1 KB. **With an empty queue the DMA repeats old leftovers**, so before closing the device fill the whole ring with silence (8192 + 1024 frames).
-- Opening a game: the menu music fades down over 0.4 s, the soft enter effect plays, the message shows, the ring fills with silence, the device closes. The game's audio rises from 0 to normal in 0.6 s (`FADE_IN` in `runner.c`).
+- Opening a game: the menu music fades down over 0.4 s, the soft enter effect plays, the message shows, the ring fills with silence, the device closes. The game's audio rises from 0 to normal in 0.6 s (`FADE_IN_FRAMES` in `runner_audio.c`).
 - Effects have no echo. No high chimes: low square waves and bubbles only.
 
 ### 3.8 Logs on the card (`retro/`)
