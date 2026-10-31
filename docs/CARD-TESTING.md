@@ -11,7 +11,7 @@ Use a regular card with MBR and one FAT32 partition. Touch only what is inside `
    ```
 2. Run the ARM menu in qemu. This uses simulated keys and saves `out/stick-shot.png`:
    ```bash
-   make test
+   make smoke-arm
    ```
 3. To try an ARM emulator in qemu:
    ```bash

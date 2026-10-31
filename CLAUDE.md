@@ -1,4 +1,4 @@
-# CLAUDE.md - gamestick-os
+# CLAUDE.md - RetroStick OS
 
 A retro gaming system for the **Game Stick 4K** with a **GeneralPlus GPL32900B** board (not Rockchip, not Hi3798). It has an Aero-themed menu with 8-bit music and a pause menu with saves. It runs **entirely from the SD card** through the `retro/init` hook in the factory firmware, and **nothing is written to the SPI flash**. Remove the card and the stick goes back to its factory menu.
 
@@ -44,7 +44,8 @@ The libretro cores go in `cores/<name>/`: `quicknes`, `fceumm`, `snes9x2002`, `p
 make run        # menu in a window on the PC (1280x720), games through out/<system>-pc
 make arm        # static binaries for the stick (menu-arm, nes-arm, snes-arm, ...)
 make all        # PC and ARM
-make test       # ARM menu in qemu-arm-static, headless, saves out/stick-shot.png
+make smoke-arm  # ARM menu in qemu-arm-static, headless, saves out/stick-shot.png
+./run-tests.sh  # lint, unit and e2e, no window, no core, no ROM
 make card       # assembles out/card/retro/ (binaries, audio/, init, saves/)
 ```
 
@@ -61,7 +62,7 @@ PC keys: arrows = D-pad, Z = A, X = B, A = X, S = Y, Q/W = L/R, Right Shift = SE
 
 ### 2.4 Test cycle
 
-Full procedure: `docs/CARD-TESTING.md`. In short: test on the PC, `make test`, `make card`, archive the old logs on the card, copy only what changed, verify each file with `cmp`, `sync`, run a fixed script on the stick, read the logs with `tools/analyze_logs.py`.
+Full procedure: `docs/CARD-TESTING.md`. In short: test on the PC, `./run-tests.sh`, `make smoke-arm`, `make card`, archive the old logs on the card, copy only what changed, verify each file with `cmp`, `sync`, run a fixed script on the stick, read the logs with `tools/analyze_logs.py`.
 
 Quit a game through MODE > Quit game or SELECT + START. Statistics stay in memory and only reach the card on exit.
 
