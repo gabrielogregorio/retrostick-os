@@ -8,177 +8,324 @@
 
 #define BPM 150
 #define STEPS_PER_BAR 16 /* 16th notes per bar */
+#define MELODY_BARS 16
+#define SECTION_BARS 8
+#define INTRO_BARS 2
+#define LOOP_BARS 32
+#define VARIATION_SECTION 1 /* A': the section whose second half drops one octave */
+
+#define TWO_PI 6.2831853f
+#define VIBRATO_HZ 5.5f
+#define VIBRATO_DEPTH 0.004f
+#define ENVELOPE_FLOOR 0.001f
+#define VOLUME_STEPS 15     /* the NES volume has 16 levels */
+#define TRIANGLE_STEPS 7.5f /* 16 levels, centered on zero */
+#define LFSR_TOP_BIT 14
+#define LFSR_TAP_LONG 1
+#define LFSR_TAP_SHORT 6
+#define LOWPASS_AMOUNT 0.45f
+#define OUTPUT_SCALE 12000
+#define SAMPLE_MAX 32767
+#define SAMPLE_MIN -32768
+
+enum { TOKEN_HOLD = -1, TOKEN_REST = -2 };
+
+enum { DRUM_KICK, DRUM_SNARE, DRUM_HIHAT, DRUM_TYPES };
+
+typedef struct {
+    float phase, hz, env, decay, volume, duty, vibrato;
+    int on;
+} pulse_t;
+
+typedef struct {
+    float phase, hz;
+    int on;
+} triangle_t;
+
+typedef struct {
+    uint16_t lfsr;
+    int period, countdown;
+    float env, decay, volume;
+    int short_mode;
+} noise_t;
+
+typedef struct {
+    int period;
+    float decay_secs, volume;
+    int short_mode;
+} drum_t;
+
+typedef struct {
+    int root, is_minor;
+} chord_t;
 
 /* melody: one token per 16th note: note ("E5"), "-" holds, "." rests */
-static const char *MEL[16] = {
-    "E5 - G5 - C6 - - - B5 - G5 - E5 - - -",
-    "F5 - E5 - D5 - C5 - D5 - E5 - G5 - - -",
-    "A5 - - - G5 - E5 - C5 - - - E5 - A5 -",
-    "G5 - - - - - - - . . E5 - G5 - A5 -",
-    "C6 - - - A5 - F5 - A5 - C6 - D6 - C6 -",
-    "B5 - - - G5 - D5 - G5 - B5 - D6 - - -",
-    "E6 - D6 - C6 - G5 - E5 - G5 - C6 - E6 -",
-    "D6 - - - - - - - B5 - - - G5 - - -",
-    "A5 - - - C6 - A5 - F5 - - - A5 - C6 -",
-    "B5 - - - D6 - B5 - G5 - - - B5 - D6 -",
-    "G5 - - - B5 - G5 - E5 - G5 - B5 - E6 -",
-    "C6 - - - - - B5 - A5 - - - E5 - - -",
-    "F5 - A5 - D6 - - - C6 - A5 - F5 - - -",
-    "G5 - B5 - D6 - - - F6 - E6 - D6 - B5 -",
-    "C6 - - - G5 - E5 - G5 - C6 - E6 - G6 -",
-    "E6 - - - - - - - . . . . . . . .",
+static const char *MELODY[MELODY_BARS] = {
+    "E5 - G5 - C6 - - - B5 - G5 - E5 - - -",   "F5 - E5 - D5 - C5 - D5 - E5 - G5 - - -",
+    "A5 - - - G5 - E5 - C5 - - - E5 - A5 -",   "G5 - - - - - - - . . E5 - G5 - A5 -",
+    "C6 - - - A5 - F5 - A5 - C6 - D6 - C6 -",  "B5 - - - G5 - D5 - G5 - B5 - D6 - - -",
+    "E6 - D6 - C6 - G5 - E5 - G5 - C6 - E6 -", "D6 - - - - - - - B5 - - - G5 - - -",
+    "A5 - - - C6 - A5 - F5 - - - A5 - C6 -",   "B5 - - - D6 - B5 - G5 - - - B5 - D6 -",
+    "G5 - - - B5 - G5 - E5 - G5 - B5 - E6 -",  "C6 - - - - - B5 - A5 - - - E5 - - -",
+    "F5 - A5 - D6 - - - C6 - A5 - F5 - - -",   "G5 - B5 - D6 - - - F6 - E6 - D6 - B5 -",
+    "C6 - - - G5 - E5 - G5 - C6 - E6 - G6 -",  "E6 - - - - - - - . . . . . . . .",
 };
-/* chord of each melody bar: root (MIDI) and type (0 major, 1 minor) */
-static const int CHORDS[16][2] = {
+
+static const chord_t CHORDS[MELODY_BARS] = {
     {48, 0}, {48, 0}, {45, 1}, {45, 1}, {41, 0}, {43, 0}, {48, 0}, {43, 0},
     {41, 0}, {43, 0}, {40, 1}, {45, 1}, {38, 1}, {43, 0}, {48, 0}, {48, 0},
 };
-/* order: intro (2 bars of bass and drums only), then A A' B A (A = bars 0-7, B = 8-15) */
-#define INTRO 2
+
+static const drum_t DRUMS[DRUM_TYPES] = {
+    [DRUM_KICK] = {40, 0.05f, 0.55f, 0},
+    [DRUM_SNARE] = {8, 0.07f, 0.45f, 0},
+    [DRUM_HIHAT] = {2, 0.015f, 0.22f, 1},
+};
 
 static int rate;
 static double samples_per_step;
+static pulse_t lead, arpeggio;
+static triangle_t bass;
+static noise_t drums;
+static long sample_position;
 
-static float midi_hz(int n) { return 440.0f * powf(2.0f, (n - 69) / 12.0f); }
-
-static int note(const char *t)
+static float midi_hz(int note)
 {
-    static const int ofs[7] = {9, 11, 0, 2, 4, 5, 7}; /* A B C D E F G */
-    int n = ofs[t[0] - 'A'], i = 1;
-    if (t[i] == '#') { n++; i++; }
-    return n + (t[i] - '0' + 1) * 12;
+    return 440.0f * powf(2.0f, (note - 69) / 12.0f);
 }
 
-/* reads token k (0..15) of the bar: returns the note, -1 hold, -2 rest */
-static int token(const char *line, int k)
+static int parse_note(const char *text)
 {
-    while (k--) { while (*line && *line != ' ') line++; while (*line == ' ') line++; }
-    if (*line == '-') return -1;
-    if (*line == '.') return -2;
-    return note(line);
-}
-
-/* ---- voices ---- */
-typedef struct { float phase, f, env, dec, vol, duty, vib; int on; } pulse_t;
-typedef struct { float phase, f; int on; } tri_t;
-typedef struct { uint16_t lfsr; int period, count; float env, dec, vol; int short_mode; } noise_t;
-static pulse_t p1, p2;
-static tri_t tr;
-static noise_t rd;
-static long sample_pos; /* global counter */
-
-static float pulse(pulse_t *p)
-{
-    if (!p->on && p->env < 0.001f) return 0;
-    float t = sample_pos / (float)rate;
-    float f = p->f * (1 + p->vib * sinf(t * 6.2831853f * 5.5f)); /* light vibrato on long notes */
-    p->phase += f / rate;
-    p->phase -= (int)p->phase;
-    p->env *= p->dec;
-    /* volume in 16 steps, like the NES */
-    float e = (int)(p->env * 15) / 15.0f;
-    return (p->phase < p->duty ? 1.0f : -1.0f) * e * p->vol;
-}
-
-static float triangle(tri_t *t)
-{
-    if (!t->on) return 0;
-    t->phase += t->f / rate;
-    t->phase -= (int)t->phase;
-    float v = t->phase < 0.5f ? t->phase * 4 - 1 : 3 - t->phase * 4;
-    return (int)(v * 7.5f) / 7.5f * 0.9f; /* 16 steps */
-}
-
-static float noise(noise_t *r)
-{
-    if (r->env < 0.001f) return 0;
-    if (--r->count <= 0) {
-        r->count = r->period;
-        int bit = (r->lfsr ^ (r->lfsr >> (r->short_mode ? 6 : 1))) & 1;
-        r->lfsr = (r->lfsr >> 1) | (bit << 14);
+    static const int SEMITONES[7] = {9, 11, 0, 2, 4, 5, 7}; /* A B C D E F G */
+    int note = SEMITONES[text[0] - 'A'];
+    int position = 1;
+    if (text[position] == '#') {
+        note += 1;
+        position += 1;
     }
-    r->env *= r->dec;
-    return ((r->lfsr & 1) ? 1.0f : -1.0f) * r->env * r->vol;
+
+    return note + (text[position] - '0' + 1) * 12;
 }
 
-static void drum(int type)
+/* Token number `index` (0..15) of a bar: the MIDI note, TOKEN_HOLD or TOKEN_REST. */
+static int read_token(const char *line, int index)
 {
-    float s = 1.0f / rate;
-    rd.env = 1;
-    if (type == 0) { rd.period = 40; rd.dec = expf(-s / 0.05f); rd.vol = 0.55f; rd.short_mode = 0; }  /* kick */
-    if (type == 1) { rd.period = 8; rd.dec = expf(-s / 0.07f); rd.vol = 0.45f; rd.short_mode = 0; }   /* snare */
-    if (type == 2) { rd.period = 2; rd.dec = expf(-s / 0.015f); rd.vol = 0.22f; rd.short_mode = 1; }  /* hi-hat */
-}
-
-/* ---- sequence ---- */
-static int melody_bar(int c) /* bar c of the song (0 = start of the loop) -> melody bar */
-{
-    static const int ORDER[4] = {0, 0, 8, 0}; /* A A B A */
-    return ORDER[(c / 8) % 4] + c % 8;
-}
-
-static void step(int c, int s, int intro)
-{
-    float st = 60.0f / BPM / 4, secs = 1.0f / rate;
-    int cm = intro ? 0 : melody_bar(c);
-    int root = CHORDS[cm][0], is_minor = CHORDS[cm][1];
-    /* bass (triangle): root and octave in 8th notes */
-    tr.on = 1;
-    tr.f = midi_hz(root - 12 + ((s / 2) % 2 ? 12 : 0) + (s >= 12 && s % 4 == 2 ? 7 : 0));
-    /* drums */
-    if (s == 0 || s == 10) drum(0);
-    else if (s == 4 || s == 12) drum(1);
-    else if (s % 2 == 0) drum(2);
-    if (intro) return;
-    /* arpeggio (thin square, very quiet) */
-    int arp[4] = {0, is_minor ? 3 : 4, 7, 12};
-    p2.f = midi_hz(root + 12 + arp[s % 4]);
-    p2.on = 1; p2.env = 1; p2.dec = expf(-secs / 0.06f); p2.vol = 0.10f; p2.duty = 0.125f; p2.vib = 0;
-    /* melody (variation in A': one octave down in the second half) */
-    int t = token(MEL[cm], s);
-    if (t >= 0) {
-        int octave = ((c / 8) % 4 == 1 && c % 8 >= 4) ? -12 : 0;
-        p1.f = midi_hz(t + octave);
-        p1.on = 1; p1.env = 1; p1.dec = expf(-secs / 0.45f); p1.vol = 0.22f; p1.duty = 0.25f; p1.vib = 0;
-    } else if (t == -1 && p1.on) {
-        p1.vib = 0.004f; /* a held note gets vibrato */
-    } else if (t == -2) {
-        p1.on = 0; p1.dec = expf(-secs / 0.02f);
-    }
-    (void)st;
-}
-
-static void mix(int16_t *out, long n, int c0, int intro)
-{
-    double counter = 0;
-    int c = c0, s = 0;
-    for (long k = 0; k < n; k++) {
-        if (counter <= 0) {
-            step(c, s, intro);
-            if (++s == STEPS_PER_BAR) { s = 0; c++; }
-            counter += samples_per_step;
+    for (int skipped = 0; skipped < index; skipped += 1) {
+        while (*line && *line != ' ') {
+            line += 1;
         }
-        counter -= 1;
-        float v = pulse(&p1) + pulse(&p2) + triangle(&tr) * 0.30f + noise(&rd) * 0.5f;
-        /* light low-pass filter (the NES had one on its output) */
-        static float lp;
-        lp += (v - lp) * 0.45f;
-        int x = (int)(lp * 12000);
-        out[k * 2] = out[k * 2 + 1] = x > 32767 ? 32767 : x < -32768 ? -32768 : x;
-        sample_pos++;
+        while (*line == ' ') {
+            line += 1;
+        }
+    }
+    if (*line == '-') {
+        return TOKEN_HOLD;
+    }
+    if (*line == '.') {
+        return TOKEN_REST;
+    }
+
+    return parse_note(line);
+}
+
+static float pulse_sample(pulse_t *pulse)
+{
+    if (!pulse->on && pulse->env < ENVELOPE_FLOOR) {
+        return 0;
+    }
+    float secs = sample_position / (float)rate;
+    float hz = pulse->hz * (1 + pulse->vibrato * sinf(secs * TWO_PI * VIBRATO_HZ));
+    pulse->phase += hz / rate;
+    pulse->phase -= (int)pulse->phase;
+    pulse->env *= pulse->decay;
+    float stepped_env = (int)(pulse->env * VOLUME_STEPS) / (float)VOLUME_STEPS;
+
+    return (pulse->phase < pulse->duty ? 1.0f : -1.0f) * stepped_env * pulse->volume;
+}
+
+static float triangle_sample(triangle_t *triangle)
+{
+    if (!triangle->on) {
+        return 0;
+    }
+    triangle->phase += triangle->hz / rate;
+    triangle->phase -= (int)triangle->phase;
+    float wave = triangle->phase < 0.5f ? triangle->phase * 4 - 1 : 3 - triangle->phase * 4;
+
+    return (int)(wave * TRIANGLE_STEPS) / TRIANGLE_STEPS * 0.9f;
+}
+
+static float noise_sample(noise_t *channel)
+{
+    if (channel->env < ENVELOPE_FLOOR) {
+        return 0;
+    }
+    channel->countdown -= 1;
+    if (channel->countdown <= 0) {
+        channel->countdown = channel->period;
+        int tap = channel->short_mode ? LFSR_TAP_SHORT : LFSR_TAP_LONG;
+        int bit = (channel->lfsr ^ (channel->lfsr >> tap)) & 1;
+        channel->lfsr = (channel->lfsr >> 1) | (bit << LFSR_TOP_BIT);
+    }
+    channel->env *= channel->decay;
+
+    return ((channel->lfsr & 1) ? 1.0f : -1.0f) * channel->env * channel->volume;
+}
+
+static void hit_drum(int type)
+{
+    const drum_t *drum = &DRUMS[type];
+    float sample_secs = 1.0f / rate;
+    drums.env = 1;
+    drums.period = drum->period;
+    drums.decay = expf(-sample_secs / drum->decay_secs);
+    drums.volume = drum->volume;
+    drums.short_mode = drum->short_mode;
+}
+
+/* Bar of the song (0 = start of the loop) to melody bar: A A' B A, with A = bars 0-7 and B = 8-15. */
+static int melody_bar(int bar)
+{
+    static const int SECTION_START[4] = {0, 0, 8, 0};
+
+    return SECTION_START[(bar / SECTION_BARS) % 4] + bar % SECTION_BARS;
+}
+
+/* Root and octave in 8th notes, with a fifth on the last beat. */
+static int bass_note(int root, int step)
+{
+    int octave = (step / 2) % 2 ? 12 : 0;
+    int fifth = step >= 12 && step % 4 == 2 ? 7 : 0;
+
+    return root - 12 + octave + fifth;
+}
+
+static void play_drums(int step)
+{
+    if (step == 0 || step == 10) {
+        hit_drum(DRUM_KICK);
+    } else if (step == 4 || step == 12) {
+        hit_drum(DRUM_SNARE);
+    } else if (step % 2 == 0) {
+        hit_drum(DRUM_HIHAT);
     }
 }
 
-void chip_init(int t)
+/* Thin square, very quiet. */
+static void play_arpeggio(const chord_t *chord, int step)
 {
-    rate = t;
-    samples_per_step = rate * 60.0 / BPM / 4;
-    memset(&p1, 0, sizeof p1); memset(&p2, 0, sizeof p2); memset(&tr, 0, sizeof tr); memset(&rd, 0, sizeof rd);
-    rd.lfsr = 1; sample_pos = 0;
+    int intervals[4] = {0, chord->is_minor ? 3 : 4, 7, 12};
+    arpeggio.hz = midi_hz(chord->root + 12 + intervals[step % 4]);
+    arpeggio.on = 1;
+    arpeggio.env = 1;
+    arpeggio.decay = expf(-(1.0f / rate) / 0.06f);
+    arpeggio.volume = 0.10f;
+    arpeggio.duty = 0.125f;
+    arpeggio.vibrato = 0;
 }
 
-long chip_intro_frames(void) { return (long)(INTRO * STEPS_PER_BAR * samples_per_step + 0.5); }
-long chip_loop_frames(void) { return (long)(32 * STEPS_PER_BAR * samples_per_step + 0.5); }
+static void play_lead(int bar, int token)
+{
+    float sample_secs = 1.0f / rate;
+    if (token >= 0) {
+        int is_variation = (bar / SECTION_BARS) % 4 == VARIATION_SECTION && bar % SECTION_BARS >= SECTION_BARS / 2;
+        lead.hz = midi_hz(token + (is_variation ? -12 : 0));
+        lead.on = 1;
+        lead.env = 1;
+        lead.decay = expf(-sample_secs / 0.45f);
+        lead.volume = 0.22f;
+        lead.duty = 0.25f;
+        lead.vibrato = 0;
+    } else if (token == TOKEN_HOLD && lead.on) {
+        lead.vibrato = VIBRATO_DEPTH;
+    } else if (token == TOKEN_REST) {
+        lead.on = 0;
+        lead.decay = expf(-sample_secs / 0.02f);
+    }
+}
 
-void chip_intro(int16_t *out) { mix(out, chip_intro_frames(), 0, 1); }
-void chip_loop(int16_t *out) { mix(out, chip_loop_frames(), 0, 0); }
+static void sequence_step(int bar, int step, int intro)
+{
+    int section_bar = intro ? 0 : melody_bar(bar);
+    const chord_t *chord = &CHORDS[section_bar];
+    bass.on = 1;
+    bass.hz = midi_hz(bass_note(chord->root, step));
+    play_drums(step);
+    if (intro) {
+        return;
+    }
+    play_arpeggio(chord, step);
+    play_lead(bar, read_token(MELODY[section_bar], step));
+}
+
+static int16_t clamp_sample(int sample)
+{
+    if (sample > SAMPLE_MAX) {
+        return SAMPLE_MAX;
+    }
+    if (sample < SAMPLE_MIN) {
+        return SAMPLE_MIN;
+    }
+
+    return (int16_t)sample;
+}
+
+static void render(int16_t *stereo, long frames, int intro)
+{
+    /* light low-pass filter (the NES had one on its output); its state survives chip_init() */
+    static float lowpass;
+    double step_countdown = 0;
+    int bar = 0;
+    int step = 0;
+    for (long frame = 0; frame < frames; frame += 1) {
+        if (step_countdown <= 0) {
+            sequence_step(bar, step, intro);
+            step += 1;
+            if (step == STEPS_PER_BAR) {
+                step = 0;
+                bar += 1;
+            }
+            step_countdown += samples_per_step;
+        }
+        step_countdown -= 1;
+        float mixed = pulse_sample(&lead) + pulse_sample(&arpeggio) + triangle_sample(&bass) * 0.30f +
+                      noise_sample(&drums) * 0.5f;
+        lowpass += (mixed - lowpass) * LOWPASS_AMOUNT;
+        int16_t sample = clamp_sample((int)(lowpass * OUTPUT_SCALE));
+        stereo[frame * 2] = sample;
+        stereo[frame * 2 + 1] = sample;
+        sample_position += 1;
+    }
+}
+
+void chip_init(int sample_rate)
+{
+    rate = sample_rate;
+    samples_per_step = rate * 60.0 / BPM / 4;
+    memset(&lead, 0, sizeof lead);
+    memset(&arpeggio, 0, sizeof arpeggio);
+    memset(&bass, 0, sizeof bass);
+    memset(&drums, 0, sizeof drums);
+    drums.lfsr = 1;
+    sample_position = 0;
+}
+
+long chip_intro_frames(void)
+{
+    return (long)(INTRO_BARS * STEPS_PER_BAR * samples_per_step + 0.5);
+}
+
+long chip_loop_frames(void)
+{
+    return (long)(LOOP_BARS * STEPS_PER_BAR * samples_per_step + 0.5);
+}
+
+void chip_intro(int16_t *stereo)
+{
+    render(stereo, chip_intro_frames(), 1);
+}
+
+void chip_loop(int16_t *stereo)
+{
+    render(stereo, chip_loop_frames(), 0);
+}

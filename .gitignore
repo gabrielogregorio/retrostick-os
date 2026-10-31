@@ -9,6 +9,9 @@ tools/re/venv/
 __pycache__/
 cache/
 .mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
 menu-state.txt
 favorites.txt
 launch.txt

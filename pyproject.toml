@@ -1,0 +1,17 @@
+[project]
+name = "retrostick-os"
+version = "1.0.0"
+description = "Retro gaming system for the GPL32900B Game Stick 4K, runs entirely from the SD card"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["tools", "tests/mock"]
+testpaths = ["tests/python", "tests/e2e"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 120
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I", "UP"]

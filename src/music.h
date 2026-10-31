@@ -7,5 +7,5 @@ enum { SFX_MOVE, SFX_SYSTEM, SFX_OPEN, SFX_BACK, SFX_FAVORITE, SFX_UNFAVORITE, S
 void music_init(int rate);
 void music_render(int16_t *stereo, int frames); /* mixes music + effects */
 void music_effect(int which);
-void music_volume(float v); /* 0..1, with a ramp */
-void music_effects_only(int on); /* 1 = sequencer stopped (recording effects) */
+void music_volume(float volume);   /* 0..1, with a ramp */
+void music_effects_only(int only); /* 1 = sequencer stopped (recording effects) */

@@ -1,10 +1,49 @@
-# gamestick-os
+<div align="center">
+
+# RetroStick OS
+
+**A custom retro gaming system for the GPL32900B Game Stick 4K. Runs entirely from the SD card, nothing is written to the flash.**
+
+![C](https://img.shields.io/badge/C-11-00599C?style=for-the-badge&logo=c&logoColor=white)
+![libretro](https://img.shields.io/badge/libretro-cores-555555?style=for-the-badge)
+![ARMv6](https://img.shields.io/badge/ARMv6-GPL32900B-0091BD?style=for-the-badge&logo=arm&logoColor=white)
+![SDL2](https://img.shields.io/badge/SDL2-preview-1D4ED8?style=for-the-badge)
+![pytest](https://img.shields.io/badge/pytest-e2e-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
+![Safe](https://img.shields.io/badge/flash-never%20written-2E7D32?style=for-the-badge)
+![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
+
+<br>
+
+<img src="docs/demo.gif" alt="The menu running on mock games: carousel of systems, game list with cover and details, favorites and the controller diagnostics screen" width="480">
+
+<sub>Recorded from the real menu with invented games (`make demo`).</sub>
+
+</div>
 
 A retro gaming system (menu plus emulators) for the **Game Stick 4K** built on a **GeneralPlus GPL32900B** board.
 
 It runs **entirely from the SD card** and writes nothing to the device's SPI flash. Remove the card and the stick goes back to its factory menu.
 
 It provides an Aero-themed menu with glass, bubbles and 8-bit music, a game list with cover, year, genre and description, favorites, a controller diagnostics screen, and a pause menu with save states.
+
+## Is this your stick?
+
+RetroStick OS targets one specific board, and sticks sold under similar names use other chips. Check the system and the hardware below before you start.
+
+| | Compatible stick |
+|---|---|
+| Product | **Game Stick 4K Ultra HD**, HDMI stick with 2 wireless controllers and a USB receiver (the LITE version and other boards are not the target) |
+| Factory system | Own **"10 in 1"** menu on Linux 2.6.32, loaded from the SPI flash, no Android and no EmuELEC |
+| SoC | **GeneralPlus GPL32900B**, ARM1176 (ARMv6 + VFP); the marking on the chip may be scratched or re-marked |
+| Memory | 64 MB RAM, 8 MB SPI flash (XMC XM25QH64A) |
+| Video | HDMI, logical panel 720x480 at 59.94 Hz, even when the box says 4K |
+| Card | SD with MBR and one FAT32 partition; exFAT does not mount |
+
+**Does not apply:** sticks with Hi3798 or Rockchip chips, or any system based on Android, EmuELEC, GStickOS or similar. Their images do not boot here, and this project does not boot there.
+
+**Safe check, no opening and no flashing:** prepare a card as described in [Preparing the card](#preparing-the-card) and boot the stick with it. On a compatible stick the menu comes up, and `retro/log-steps.txt` appears on the card. Without the card, the stick returns to its factory menu. If nothing changes and that file is not created, the board is a different one.
+
+**Sure check:** with the stick open, read the SPI flash in read-only mode (`tools/re/read_spi.sh`). A compatible dump contains the strings `GPCV2149 SPI 1st bootloader` and `GPL329xxB linux bootloader`. See [docs/HARDWARE.md](docs/HARDWARE.md).
 
 ## Requirements
 
@@ -54,7 +93,7 @@ cd ..
 The result looks like this:
 
 ```
-gamestick-os/
+retrostick-os/
 ├── Makefile
 ├── src/
 ├── tools/
@@ -76,7 +115,7 @@ gamestick-os/
 make run     # builds for the PC and opens the menu in a 1280x720 window
 make arm     # static binaries for the stick (menu-arm, nes-arm, snes-arm, ...)
 make all     # PC and ARM
-make test    # runs the ARM menu in qemu-arm-static, headless, saves out/stick-shot.png
+make smoke-arm  # runs the ARM menu in qemu-arm-static, headless, saves out/stick-shot.png
 make card    # assembles out/card/retro/
 ```
 
@@ -98,6 +137,40 @@ To run one emulator on the PC without the menu:
 | F2 | Pretend controller 2 connected | | |
 
 Any USB or Bluetooth controller also works on the PC, and its GUIDE button acts as MODE.
+
+## Tests
+
+No test opens a window or needs an emulator core or a ROM: the e2e layer runs the real menu and runner on SDL's dummy drivers, with a mock core (`tests/mock/mock_core.c`) and invented games (`tests/mock/mock_roms.py`).
+
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements-dev.txt
+./run-tests.sh        # lint, unit and e2e, ends with ALL GREEN
+```
+
+| Layer | Command | What it covers |
+|---|---|---|
+| Unit, C | `make test-unit` | drawing, menu helpers, favorites, state file, controller packets, audio, with ASan and UBSan |
+| Unit, Python | `.venv/bin/python -m pytest tests/python` | `.rdb` reader, cover title matching, log summary |
+| E2E | `make test-bins`, then `.venv/bin/python -m pytest tests/e2e` | menu navigation, favorites, launching a game, pause menu, save states, restart, quit |
+| ARM | `make out/menu-arm`, then the same pytest | the stick build under qemu; skipped when the binary is missing |
+
+Any scripted run works by hand too:
+
+```bash
+SDL_VIDEODRIVER=dummy STICK_ROMS=roms STICK_KEYS=R,D,D,A STICK_SHOT=out/shot.ppm out/test/menu-sdl
+```
+
+`STICK_KEYS` takes `U D L R A B X Y S T M`, one key every 15 input reads, and `.` for a pause. `make demo` records `docs/demo.gif` the same way.
+
+## CI
+
+GitHub Actions runs on `dev`, `main` and pull requests into `main`:
+
+- **Tests:** C and Python unit tests, e2e on SDL, and the ARM menu built with `gcc-arm-linux-gnueabi` and run under qemu.
+- **Lint:** ruff, shellcheck, C without warnings, pinned actions, valid YAML, a light GIF, and no ROM, firmware or core in the repo.
+- **CodeQL:** C, Python and the workflows.
+- **Release:** merging a pull request into `main` creates the tag `vX.Y.Z` from `VERSION` and a release with the source tarball. Each pull request must bump `VERSION`.
 
 ## Preparing the card
 
@@ -190,16 +263,24 @@ Copy each `.meta/` folder along with the games: `retro/roms/<system>/.meta/`.
 ## Project layout
 
 ```
-src/main.c          menu: carousel, game list, favorites, diagnostics, launching
+src/main.c          menu process: startup, input loop, launching
+src/catalog.c       systems, game scan, favorites, menu state
+src/details.c       game details and covers
+src/menu_view.c     menu drawing
+src/menu_audio.c    music and effects playback
 src/aero.c          Aero theme: sky, bubbles, glass
 src/icons.c         glass bubbles with the console drawn inside
 src/gfx.c           software drawing: rectangles, gradients, text with alpha
 src/music.c         synthesized music and effects (PC only)
 src/chip.c          8-bit synthesizer (PC only)
-src/runner.c        game runner: statically linked libretro core, audio, saves
-src/pause.c         pause menu
+src/runner.c        game process: libretro core, main loop
+src/runner_audio.c  resampling, rate control, fade-in
+src/runner_saves.c  SRAM and save states
+src/runner_pause.c  pause menu logic
+src/pause.c         pause menu drawing
 src/plat.h          platform layer: the menu and the runner talk only to it
-src/plat_stick.c    stick platform: /dev/disp0, /dev/ttyS1, /dev/dsp
+src/plat_stick.c    stick platform: init, log, clock
+src/stick_*.c       stick video, game frames, controllers, audio
 src/plat_sdl.c      PC platform: SDL2
 src/plat_exec.c     launches a game
 src/font_data.h     generated at build time, not in the repo
@@ -207,6 +288,7 @@ card-base/retro/    boot script for the card
 cores/              build recipes; core sources are fetched here, not in the repo
 roms/               your games, not in the repo
 tools/              covers, font and audio generators, log analysis, re/
+tests/              unit, Python and e2e tests, mock core and mock games
 docs/               hardware, troubleshooting, techniques, card testing, next steps
 ```
 
@@ -230,6 +312,10 @@ This repo contains only original code. It documents hardware interfaces (ioctl n
 | Noto Sans | SIL OFL; used at build time from the system font, not stored in the repo |
 | Factory firmware | Never stored in the repo |
 | ROMs | Supplied by you, never included |
+
+## License
+
+The code in this repository is under the [MIT License](LICENSE). It covers only this repository. Each emulator core keeps its own license: a binary linked with a GPL core must follow the GPL, and cores under non-commercial terms, such as snes9x2002 and picodrive, cannot be sold. ROMs and the factory firmware are not covered.
 
 ## Supported systems
 

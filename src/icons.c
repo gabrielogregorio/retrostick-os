@@ -1,157 +1,299 @@
-/* System icons: glass bubble with the console's controller/handheld drawn inside.
- * Each icon becomes a sprite with alpha (built once): it is drawn over a black background and over a white one
- * and alpha is taken from the difference; each frame adds only the scaled copy. */
+/* System icons: glass bubble with the console's controller or handheld drawn inside. */
 #include <stdlib.h>
 #include <string.h>
 #include "gfx.h"
 #include "icons.h"
 
 #define ICON_SIZE 102 /* small on purpose: fewer pixels per frame */
-static struct { uint32_t color[ICON_SIZE * ICON_SIZE]; uint8_t alpha[ICON_SIZE * ICON_SIZE]; int ok; } spr[ICONS_MAX];
+#define ICON_PIXELS (ICON_SIZE * ICON_SIZE)
+#define OPAQUE 255
+#define BLACK 0x000000
+#define WHITE 0xffffff
+#define MIN_DRAW_SIZE 4
+#define REFLECTION_LAYERS 4
 
-static int CX, CY;
-static float S;
+static struct {
+    uint32_t color[ICON_PIXELS];
+    uint8_t alpha[ICON_PIXELS];
+    int ready;
+} sprites[ICONS_MAX];
 
-static void R(float x, float y, float w, float h, float r, uint32_t color)
-{
-    gfx_round_rect_grad(CX + (int)(x * S), CY + (int)(y * S), (int)(w * S), (int)(h * S), (int)(r * S),
-                       gfx_blend(color, 0xffffff, 70), gfx_blend(color, 0x000000, 40), 255);
-}
-static void C(float x, float y, float r, uint32_t color) { R(x - r, y - r, r * 2, r * 2, r, color); }
-static void cross(float x, float y, float t, uint32_t color)
-{
-    R(x - t / 2, y - t / 6, t, t / 3, 1, color);
-    R(x - t / 6, y - t / 2, t / 3, t, 1, color);
-}
+/* Where console parts land while an icon is being drawn. */
+static struct {
+    int cx, cy;
+    float scale;
+} stage;
 
-static void draw_console(const char *s)
+static void part(float x, float y, float w, float h, float radius, uint32_t color)
 {
-    if (!strcmp(s, "nes")) {
-        R(-34, -15, 68, 30, 3, 0xd8d8d4);
-        R(-31, -10, 62, 22, 2, 0x2c2c2c);
-        cross(-19, 1, 13, 0x101010);
-        R(-6, 3, 6, 3, 1.5f, 0x8a8a8a); R(1, 3, 6, 3, 1.5f, 0x8a8a8a);
-        C(14, 2, 4.6f, 0xd42a2a); C(25, 2, 4.6f, 0xd42a2a);
-    } else if (!strcmp(s, "snes")) {
-        R(-35, -14, 70, 28, 14, 0xd0d0d8);
-        C(-20, 0, 9, 0xb8b8c2);
-        cross(-20, 0, 13, 0x303034);
-        R(-6, 1, 5, 3, 1.5f, 0x606068); R(1, 1, 5, 3, 1.5f, 0x606068);
-        C(20, -6, 3.8f, 0x3050c8); C(13.5f, 0, 3.8f, 0x30a040);
-        C(26.5f, 0, 3.8f, 0xd03030); C(20, 6, 3.8f, 0xe8c020);
-    } else if (!strcmp(s, "md")) {
-        R(-35, -15, 70, 30, 15, 0x34343a);
-        C(-19, 1, 9.5f, 0x1c1c20);
-        cross(-19, 1, 13, 0x56565e);
-        R(-3, -10, 7, 3, 1.5f, 0xc02838);
-        C(8, 5, 4.4f, 0x5a5a66); C(17, 1.5f, 4.4f, 0x5a5a66); C(26, -2, 4.4f, 0x5a5a66);
-    } else if (!strcmp(s, "sms")) {
-        R(-33, -14, 66, 28, 3, 0x202024);
-        R(-31, -12, 62, 2, 1, 0xd02424);
-        R(-26, -6, 15, 15, 2, 0x3a3a40);
-        cross(-18.5f, 1.5f, 12, 0x101012);
-        C(15, 3, 4.8f, 0x8c8c94); C(26, 3, 4.8f, 0x8c8c94);
-    } else if (!strcmp(s, "gba")) {
-        R(-37, -16, 74, 32, 14, 0x5c4cc6);
-        R(-16, -12, 32, 24, 3, 0x2a2a3c);
-        R(-13, -9, 26, 18, 1, 0x9ad4ea);
-        cross(-26, 0, 11, 0x24242c);
-        C(25, -3, 3.6f, 0xd8d8e0); C(31, 3, 3.6f, 0xd8d8e0);
-    } else if (!strcmp(s, "gb")) {
-        R(-19, -29, 38, 58, 4, 0xcac6b8);
-        R(-15, -25, 30, 22, 2, 0x5c5c6c);
-        R(-10, -22, 20, 16, 1, 0x8bac0f);
-        cross(-8, 10, 11, 0x24242a);
-        C(7, 13, 3.6f, 0xa82a5c); C(13, 8, 3.6f, 0xa82a5c);
-        R(-5, 20, 5, 2.5f, 1, 0x80807a); R(1, 20, 5, 2.5f, 1, 0x80807a);
-    } else if (!strcmp(s, "fav")) {
-        /* favorites: golden star with shine */
-        gfx_star(CX, CY - 2, (int)(33 * S), 0xfff6b0, 0xe89a10, 255);
-        gfx_star(CX - (int)(4 * S), CY - (int)(7 * S), (int)(12 * S), 0xffffff, 0xfff0a0, 150);
-    } else if (!strcmp(s, "gg")) {
-        R(-38, -17, 76, 34, 11, 0x2c2c32);
-        R(-15, -13, 30, 25, 3, 0x40404e);
-        R(-12, -10, 24, 18, 1, 0x6ab4e4);
-        cross(-26, 1, 11, 0x111114);
-        C(24, 4, 3.8f, 0x5c5c6c); C(31, -1, 3.8f, 0x5c5c6c);
-        R(22, -12, 7, 3, 1.5f, 0x2a50c0);
-    } else if (!strcmp(s, "a26")) {
-        /* CX40 joystick: black base, stick and the red button */
-        R(-21, -4, 42, 30, 4, 0x1c1c1e);
-        R(-18, -1, 36, 24, 3, 0x2e2e32);
-        C(0, 11, 8, 0x18181a);
-        R(-3, -30, 6, 42, 3, 0x26262a);
-        C(-13, -4, 5, 0xd42424);
-    } else if (!strcmp(s, "ngp")) {
-        R(-37, -16, 74, 32, 14, 0x3a70d4);
-        R(-14, -12, 28, 24, 3, 0x2a2a3c);
-        R(-11, -9, 22, 18, 1, 0xa8dcb8);
-        C(-25, 0, 7.5f, 0xd8d8e2); C(-25, 0, 3.6f, 0x9a9aac);
-        C(23, 3, 3.8f, 0xe4e4ec); C(30, -3, 3.8f, 0xe4e4ec);
-    } else if (!strcmp(s, "ws")) {
-        R(-39, -15, 78, 30, 8, 0xe8e4dc);
-        R(-16, -11, 32, 22, 2, 0x56605a);
-        R(-13, -8, 26, 16, 1, 0xb4c4a4);
-        C(-27, -5, 2.6f, 0x60606e); C(-31, 0, 2.6f, 0x60606e); C(-23, 0, 2.6f, 0x60606e); C(-27, 5, 2.6f, 0x60606e);
-        C(25, 4, 3.6f, 0x60606e); C(31, -1, 3.6f, 0x60606e);
-    }
+    gfx_round_rect_grad(stage.cx + (int)(x * stage.scale), stage.cy + (int)(y * stage.scale), (int)(w * stage.scale),
+                        (int)(h * stage.scale), (int)(radius * stage.scale), gfx_blend(color, WHITE, 70),
+                        gfx_blend(color, BLACK, 40), OPAQUE);
 }
 
-/* glass bubble + console; called twice (black and white background) */
-static void draw_icon(const char *sys, uint32_t tint)
+static void disc(float x, float y, float radius, uint32_t color)
 {
-    int c = ICON_SIZE / 2, r = ICON_SIZE * 54 / 128;
-    gfx_round_rect(c - r - 2, c - r - 2, 2 * r + 4, 2 * r + 4, r + 2, 0xffffff, 70);                 /* rim of light */
-    gfx_round_rect_grad(c - r, c - r, 2 * r, 2 * r, r, gfx_blend(tint, 0xffffff, 150), tint, 120);   /* tinted glass */
-    gfx_round_rect_grad(c - r + 8, c + r / 3, 2 * r - 16, r * 2 / 3 - 4, r / 2, tint, 0xffffff, 70);  /* bounced light at the bottom */
-    CX = c; CY = c + 3; S = 1.3f * ICON_SIZE / 128;
-    draw_console(sys);
-    /* glass reflection over the console: overlapping layers so the edge comes out soft */
-    for (int k = 0; k < 4; k++) {
-        int w = r * (13 - k * 2) / 10, h = r * (5 - k) / 10;
-        gfx_round_rect_grad(c - w / 2, c - r + 4 + k * 2, w, h, h / 2, 0xffffff, gfx_blend(tint, 0xffffff, 200), 34);
-    }
+    part(x - radius, y - radius, radius * 2, radius * 2, radius, color);
 }
 
-void icons_build(int i, const char *sys, uint32_t tint)
+static void dpad(float x, float y, float span, uint32_t color)
 {
-    static uint32_t black[ICON_SIZE * ICON_SIZE], white[ICON_SIZE * ICON_SIZE];
-    memset(black, 0, sizeof black);
-    memset(white, 0xff, sizeof white);
-    gfx_target(black, ICON_SIZE, ICON_SIZE); draw_icon(sys, tint);
-    gfx_target(white, ICON_SIZE, ICON_SIZE); draw_icon(sys, tint);
-    for (int k = 0; k < ICON_SIZE * ICON_SIZE; k++) {
-        int a = 255 - (int)(((white[k] >> 8) & 255) - ((black[k] >> 8) & 255));
-        if (a < 0) a = 0;
-        if (a > 255) a = 255;
-        spr[i].alpha[k] = a;
-        if (a) {
-            uint32_t p = black[k];
-            int rr = ((p >> 16) & 255) * 255 / a, gg = ((p >> 8) & 255) * 255 / a, bb = (p & 255) * 255 / a;
-            spr[i].color[k] = (uint32_t)(rr > 255 ? 255 : rr) << 16 | (uint32_t)(gg > 255 ? 255 : gg) << 8 | (uint32_t)(bb > 255 ? 255 : bb);
+    part(x - span / 2, y - span / 6, span, span / 3, 1, color);
+    part(x - span / 6, y - span / 2, span / 3, span, 1, color);
+}
+
+static void draw_nes(void)
+{
+    const uint32_t select_grey = 0x8a8a8a;
+    const uint32_t button_red = 0xd42a2a;
+    part(-34, -15, 68, 30, 3, 0xd8d8d4);
+    part(-31, -10, 62, 22, 2, 0x2c2c2c);
+    dpad(-19, 1, 13, 0x101010);
+    part(-6, 3, 6, 3, 1.5f, select_grey);
+    part(1, 3, 6, 3, 1.5f, select_grey);
+    disc(14, 2, 4.6f, button_red);
+    disc(25, 2, 4.6f, button_red);
+}
+
+static void draw_snes(void)
+{
+    const uint32_t select_grey = 0x606068;
+    part(-35, -14, 70, 28, 14, 0xd0d0d8);
+    disc(-20, 0, 9, 0xb8b8c2);
+    dpad(-20, 0, 13, 0x303034);
+    part(-6, 1, 5, 3, 1.5f, select_grey);
+    part(1, 1, 5, 3, 1.5f, select_grey);
+    disc(20, -6, 3.8f, 0x3050c8);
+    disc(13.5f, 0, 3.8f, 0x30a040);
+    disc(26.5f, 0, 3.8f, 0xd03030);
+    disc(20, 6, 3.8f, 0xe8c020);
+}
+
+static void draw_md(void)
+{
+    const uint32_t button_grey = 0x5a5a66;
+    part(-35, -15, 70, 30, 15, 0x34343a);
+    disc(-19, 1, 9.5f, 0x1c1c20);
+    dpad(-19, 1, 13, 0x56565e);
+    part(-3, -10, 7, 3, 1.5f, 0xc02838);
+    disc(8, 5, 4.4f, button_grey);
+    disc(17, 1.5f, 4.4f, button_grey);
+    disc(26, -2, 4.4f, button_grey);
+}
+
+static void draw_sms(void)
+{
+    const uint32_t button_grey = 0x8c8c94;
+    part(-33, -14, 66, 28, 3, 0x202024);
+    part(-31, -12, 62, 2, 1, 0xd02424);
+    part(-26, -6, 15, 15, 2, 0x3a3a40);
+    dpad(-18.5f, 1.5f, 12, 0x101012);
+    disc(15, 3, 4.8f, button_grey);
+    disc(26, 3, 4.8f, button_grey);
+}
+
+static void draw_gba(void)
+{
+    const uint32_t button_grey = 0xd8d8e0;
+    part(-37, -16, 74, 32, 14, 0x5c4cc6);
+    part(-16, -12, 32, 24, 3, 0x2a2a3c);
+    part(-13, -9, 26, 18, 1, 0x9ad4ea);
+    dpad(-26, 0, 11, 0x24242c);
+    disc(25, -3, 3.6f, button_grey);
+    disc(31, 3, 3.6f, button_grey);
+}
+
+static void draw_gb(void)
+{
+    const uint32_t button_magenta = 0xa82a5c;
+    const uint32_t select_grey = 0x80807a;
+    part(-19, -29, 38, 58, 4, 0xcac6b8);
+    part(-15, -25, 30, 22, 2, 0x5c5c6c);
+    part(-10, -22, 20, 16, 1, 0x8bac0f);
+    dpad(-8, 10, 11, 0x24242a);
+    disc(7, 13, 3.6f, button_magenta);
+    disc(13, 8, 3.6f, button_magenta);
+    part(-5, 20, 5, 2.5f, 1, select_grey);
+    part(1, 20, 5, 2.5f, 1, select_grey);
+}
+
+/* Favorites: golden star with shine. */
+static void draw_favorites(void)
+{
+    gfx_star(stage.cx, stage.cy - 2, (int)(33 * stage.scale), 0xfff6b0, 0xe89a10, OPAQUE);
+    gfx_star(stage.cx - (int)(4 * stage.scale), stage.cy - (int)(7 * stage.scale), (int)(12 * stage.scale), WHITE,
+             0xfff0a0, 150);
+}
+
+static void draw_gg(void)
+{
+    const uint32_t button_grey = 0x5c5c6c;
+    part(-38, -17, 76, 34, 11, 0x2c2c32);
+    part(-15, -13, 30, 25, 3, 0x40404e);
+    part(-12, -10, 24, 18, 1, 0x6ab4e4);
+    dpad(-26, 1, 11, 0x111114);
+    disc(24, 4, 3.8f, button_grey);
+    disc(31, -1, 3.8f, button_grey);
+    part(22, -12, 7, 3, 1.5f, 0x2a50c0);
+}
+
+/* CX40 joystick: black base, stick and the red button. */
+static void draw_a26(void)
+{
+    part(-21, -4, 42, 30, 4, 0x1c1c1e);
+    part(-18, -1, 36, 24, 3, 0x2e2e32);
+    disc(0, 11, 8, 0x18181a);
+    part(-3, -30, 6, 42, 3, 0x26262a);
+    disc(-13, -4, 5, 0xd42424);
+}
+
+static void draw_ngp(void)
+{
+    const uint32_t button_grey = 0xe4e4ec;
+    part(-37, -16, 74, 32, 14, 0x3a70d4);
+    part(-14, -12, 28, 24, 3, 0x2a2a3c);
+    part(-11, -9, 22, 18, 1, 0xa8dcb8);
+    disc(-25, 0, 7.5f, 0xd8d8e2);
+    disc(-25, 0, 3.6f, 0x9a9aac);
+    disc(23, 3, 3.8f, button_grey);
+    disc(30, -3, 3.8f, button_grey);
+}
+
+static void draw_ws(void)
+{
+    const uint32_t button_grey = 0x60606e;
+    part(-39, -15, 78, 30, 8, 0xe8e4dc);
+    part(-16, -11, 32, 22, 2, 0x56605a);
+    part(-13, -8, 26, 16, 1, 0xb4c4a4);
+    disc(-27, -5, 2.6f, button_grey);
+    disc(-31, 0, 2.6f, button_grey);
+    disc(-23, 0, 2.6f, button_grey);
+    disc(-27, 5, 2.6f, button_grey);
+    disc(25, 4, 3.6f, button_grey);
+    disc(31, -1, 3.6f, button_grey);
+}
+
+static const struct {
+    const char *system;
+    void (*draw)(void);
+} CONSOLES[] = {
+    {"nes", draw_nes}, {"snes", draw_snes}, {"md", draw_md},         {"sms", draw_sms},
+    {"gba", draw_gba}, {"gb", draw_gb},     {"fav", draw_favorites}, {"gg", draw_gg},
+    {"a26", draw_a26}, {"ngp", draw_ngp},   {"ws", draw_ws},
+};
+
+static void draw_console(const char *system)
+{
+    for (size_t index = 0; index < sizeof CONSOLES / sizeof CONSOLES[0]; index += 1) {
+        if (!strcmp(system, CONSOLES[index].system)) {
+            CONSOLES[index].draw();
+
+            return;
         }
     }
-    spr[i].ok = 1;
 }
 
-void icons_draw(uint32_t *screen, int tw, int th, int i, int cx, int cy, float scale, int alpha)
+static void draw_glass_bubble(int center, int radius, uint32_t tint)
 {
-    if (!spr[i].ok || alpha <= 0) return;
-    int d = (int)(ICON_SIZE * scale);
-    if (d < 4) return;
-    int x0 = cx - d / 2, y0 = cy - d / 2;
-    for (int y = 0; y < d; y++) {
-        int yy = y0 + y;
-        if ((unsigned)yy >= (unsigned)th) continue;
-        int sy = y * ICON_SIZE / d;
-        for (int x = 0; x < d; x++) {
-            int xx = x0 + x;
-            if ((unsigned)xx >= (unsigned)tw) continue;
-            int k = sy * ICON_SIZE + x * ICON_SIZE / d, a = spr[i].alpha[k];
-            if (!a) continue;
-            a = a * alpha / 255;
-            uint32_t *p = &screen[yy * tw + xx];
-            *p = gfx_blend(*p, spr[i].color[k], a);
+    gfx_round_rect(center - radius - 2, center - radius - 2, 2 * radius + 4, 2 * radius + 4, radius + 2, WHITE, 70);
+    gfx_round_rect_grad(center - radius, center - radius, 2 * radius, 2 * radius, radius, gfx_blend(tint, WHITE, 150),
+                        tint, 120);
+    /* bounced light at the bottom */
+    gfx_round_rect_grad(center - radius + 8, center + radius / 3, 2 * radius - 16, radius * 2 / 3 - 4, radius / 2, tint,
+                        WHITE, 70);
+}
+
+/* Overlapping layers so the edge of the reflection comes out soft. */
+static void draw_glass_reflection(int center, int radius, uint32_t tint)
+{
+    for (int layer = 0; layer < REFLECTION_LAYERS; layer += 1) {
+        int w = radius * (13 - layer * 2) / 10;
+        int h = radius * (5 - layer) / 10;
+        gfx_round_rect_grad(center - w / 2, center - radius + 4 + layer * 2, w, h, h / 2, WHITE,
+                            gfx_blend(tint, WHITE, 200), 34);
+    }
+}
+
+static void draw_icon(const char *system, uint32_t tint)
+{
+    int center = ICON_SIZE / 2;
+    int radius = ICON_SIZE * 54 / 128;
+    draw_glass_bubble(center, radius, tint);
+    stage.cx = center;
+    stage.cy = center + 3;
+    stage.scale = 1.3f * ICON_SIZE / 128;
+    draw_console(system);
+    draw_glass_reflection(center, radius, tint);
+}
+
+static int clamp_byte(int value)
+{
+    return value > 255 ? 255 : value;
+}
+
+static uint32_t unpremultiply(uint32_t pixel, int alpha)
+{
+    int r = ((pixel >> 16) & 255) * 255 / alpha;
+    int g = ((pixel >> 8) & 255) * 255 / alpha;
+    int b = (pixel & 255) * 255 / alpha;
+
+    return (uint32_t)clamp_byte(r) << 16 | (uint32_t)clamp_byte(g) << 8 | (uint32_t)clamp_byte(b);
+}
+
+/* The icon is drawn over black and over white: alpha comes from the difference between the two renders,
+ * so a built sprite composites over any background. */
+void icons_build(int icon, const char *system, uint32_t tint)
+{
+    static uint32_t on_black[ICON_PIXELS], on_white[ICON_PIXELS];
+    memset(on_black, 0, sizeof on_black);
+    memset(on_white, 0xff, sizeof on_white);
+    gfx_target(on_black, ICON_SIZE, ICON_SIZE);
+    draw_icon(system, tint);
+    gfx_target(on_white, ICON_SIZE, ICON_SIZE);
+    draw_icon(system, tint);
+    for (int index = 0; index < ICON_PIXELS; index += 1) {
+        int alpha = 255 - (int)(((on_white[index] >> 8) & 255) - ((on_black[index] >> 8) & 255));
+        if (alpha < 0) {
+            alpha = 0;
+        }
+        alpha = clamp_byte(alpha);
+        sprites[icon].alpha[index] = alpha;
+        if (alpha) {
+            sprites[icon].color[index] = unpremultiply(on_black[index], alpha);
+        }
+    }
+    sprites[icon].ready = 1;
+}
+
+void icons_draw(uint32_t *screen, int w, int h, int icon, int cx, int cy, float scale, int alpha)
+{
+    if (!sprites[icon].ready || alpha <= 0) {
+        return;
+    }
+    int size = (int)(ICON_SIZE * scale);
+    if (size < MIN_DRAW_SIZE) {
+        return;
+    }
+    int left = cx - size / 2;
+    int top = cy - size / 2;
+    for (int y = 0; y < size; y += 1) {
+        int screen_y = top + y;
+        if ((unsigned)screen_y >= (unsigned)h) {
+            continue;
+        }
+        int source_row = y * ICON_SIZE / size;
+        for (int x = 0; x < size; x += 1) {
+            int screen_x = left + x;
+            if ((unsigned)screen_x >= (unsigned)w) {
+                continue;
+            }
+            int source = source_row * ICON_SIZE + x * ICON_SIZE / size;
+            int pixel_alpha = sprites[icon].alpha[source];
+            if (!pixel_alpha) {
+                continue;
+            }
+            uint32_t *pixel = &screen[screen_y * w + screen_x];
+            *pixel = gfx_blend(*pixel, sprites[icon].color[source], pixel_alpha * alpha / OPAQUE);
         }
     }
 }

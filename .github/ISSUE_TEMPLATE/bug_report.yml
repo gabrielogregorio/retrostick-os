@@ -1,0 +1,48 @@
+name: Bug report
+description: The menu, a game, the sound or a controller misbehaves on the stick or in the PC preview
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: Which system was running, and any error shown.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the menu
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Output of `cat VERSION`
+      placeholder: 1.0.0
+    validations:
+      required: true
+  - type: input
+    id: where
+    attributes:
+      label: Where it runs
+      description: Real stick or PC preview, and the board printed on your stick
+      placeholder: Game Stick 4K, GPL32900B
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output of tools/analyze_logs.py
+      description: Run it on the retro/ folder of the card. Remove game file names if you prefer.
+      render: text

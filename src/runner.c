@@ -1,515 +1,424 @@
 /* Game runner: a statically linked libretro core + the same platform as the menu.
  * Usage: nes-<arch> <game file> [saves folder]
  * Quit the game: hold SELECT + START for 1 s (Esc too on the PC), or MODE > Quit game.
- * MODE opens the pause menu: save and load state in 2 slots, and back to the last save (includes the
- * automatic save made when quitting the game). */
+ * MODE opens the pause menu. This file holds the libretro environment, video, input and the main loop. */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include "libretro.h"
-#include "pause.h"
 #include "plat.h"
+#include "runner_internal.h"
+
+#define PLAYERS 2
+#define NO_PLAYER (-1)
+#define JOYPAD_IDS 16
+#define BYTES_PER_PIXEL 2
+#define LAST_FRAME_MAX (512 * 480)
+#define MIN_RETRACE_FPS 58 /* outside this range a core cannot follow the TV (WonderSwan 75.47 Hz runs slow) */
+#define MAX_RETRACE_FPS 62
+#define TV_FRAME_US 16684 /* 59.94 Hz */
+#define MAX_LATE_FRAMES 3
+#define QUIT_HOLD_MS 1000
+#define STATS_PERIOD_MS 5000
+#define BUSY_WAIT_MAX_US 12000 /* usleep lasts at least ~10 ms (HZ=100), the rest is a busy wait */
+#define CLOCK_RESYNC_US (-100000)
+
+/* Core options tuned for the stick's ARM11. */
+static const struct {
+    const char *key;
+    const char *value;
+} CORE_OPTIONS[] = {
+    {"fceumm_sndrate_hint", "32KHz"}, /* fewer samples to synthesize and send to audio */
+    {"fceumm_sndquality", "Low"},
+    /* automatic frame skip: the core stops drawing when the audio queue runs low */
+    {"snes9x2002_frameskip", "auto"},
+    {"gpsp_frameskip", "auto"},
+    {"picodrive_frameskip", "auto"},
+};
+
+static const uint32_t JOYPAD_BUTTONS[JOYPAD_IDS] = {
+    [RETRO_DEVICE_ID_JOYPAD_B] = BTN_B,           [RETRO_DEVICE_ID_JOYPAD_Y] = BTN_Y,
+    [RETRO_DEVICE_ID_JOYPAD_SELECT] = BTN_SELECT, [RETRO_DEVICE_ID_JOYPAD_START] = BTN_START,
+    [RETRO_DEVICE_ID_JOYPAD_UP] = BTN_UP,         [RETRO_DEVICE_ID_JOYPAD_DOWN] = BTN_DOWN,
+    [RETRO_DEVICE_ID_JOYPAD_LEFT] = BTN_LEFT,     [RETRO_DEVICE_ID_JOYPAD_RIGHT] = BTN_RIGHT,
+    [RETRO_DEVICE_ID_JOYPAD_A] = BTN_A,           [RETRO_DEVICE_ID_JOYPAD_X] = BTN_X,
+    [RETRO_DEVICE_ID_JOYPAD_L] = BTN_L,           [RETRO_DEVICE_ID_JOYPAD_R] = BTN_R,
+};
 
 static input_t input;
-static int pixel_format = RETRO_PIXEL_FORMAT_0RGB1555;
-static const char *saves_dir = ".";
-static int audio_ok;
-static retro_audio_buffer_status_callback_t audio_status_cb; /* the core asks for the queue level to decide on frame skip */
-static uint32_t skipped_frames, t_ref, ref_period;
-static double sum_sq; /* sum of squares of the core audio (RMS level in the log) */
-static long n_sq;
-static int skipped_last, consecutive_skips, drew; /* drew: the core sent an image this frame (when skipping it may not even call video) */
+static int drew; /* the core sent an image this frame; when skipping it may not even call video */
+static int consecutive_skips;
 
-static void logcb(enum retro_log_level level, const char *fmt, ...)
+/* Copy of the last drawn frame for the pause menu: the core's buffer may change later. */
+static uint16_t last_frame[LAST_FRAME_MAX];
+static int last_frame_w, last_frame_h;
+
+static struct {
+    uint32_t frame_us;
+    uint32_t next_frame_us; /* used when pacing by the clock */
+    uint32_t reference_us;  /* when this frame should start; 0 restarts the reference */
+    uint32_t reference_period_us;
+    uint32_t quit_held_since_ms;
+} timing;
+
+/* where each frame's time goes */
+static struct {
+    uint32_t since_ms;
+    uint32_t run_ms;
+    uint32_t video_ms;
+    uint32_t skipped_frames;
+    int frames;
+} stats;
+
+static void log_core_message(enum retro_log_level level, const char *format, ...)
 {
-    if (level < RETRO_LOG_WARN) return;
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
+    if (level < RETRO_LOG_WARN) {
+        return;
+    }
+    va_list arguments;
+    va_start(arguments, format);
+    vfprintf(stderr, format, arguments);
+    va_end(arguments);
 }
 
-static bool environment(unsigned cmd, void *data)
+static bool get_core_option(struct retro_variable *variable)
 {
-    switch (cmd) {
-    case RETRO_ENVIRONMENT_GET_CAN_DUPE: *(bool *)data = true; return true;
-    case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT:
-        pixel_format = *(enum retro_pixel_format *)data;
-        return pixel_format == RETRO_PIXEL_FORMAT_RGB565;
-    case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
-    case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: *(const char **)data = saves_dir; return true;
-    case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: ((struct retro_log_callback *)data)->log = logcb; return true;
-    case RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK: {
-        const struct retro_audio_buffer_status_callback *c = data;
-        audio_status_cb = c ? c->callback : NULL;
-        return true;
+    for (unsigned option_index = 0; option_index < sizeof CORE_OPTIONS / sizeof CORE_OPTIONS[0]; option_index += 1) {
+        if (!strcmp(variable->key, CORE_OPTIONS[option_index].key)) {
+            variable->value = CORE_OPTIONS[option_index].value;
+
+            return true;
+        }
     }
-    case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY: return true;
-    case RETRO_ENVIRONMENT_GET_VARIABLE: {
-        /* core options tuned for the stick's ARM11 */
-        struct retro_variable *v = data;
-        static const char *OPTIONS[][2] = {
-            {"fceumm_sndrate_hint", "32KHz"}, /* fewer samples to synthesize and send to audio */
-            {"fceumm_sndquality", "Low"},
-            /* automatic frame skip: the core stops drawing when the audio queue runs low */
-            {"snes9x2002_frameskip", "auto"},
-            {"gpsp_frameskip", "auto"},
-            {"picodrive_frameskip", "auto"},
-        };
-        for (unsigned i = 0; i < sizeof OPTIONS / sizeof OPTIONS[0]; i++)
-            if (!strcmp(v->key, OPTIONS[i][0])) { v->value = OPTIONS[i][1]; return true; }
-        v->value = NULL;
-        return false;
-    }
-    }
+    variable->value = NULL;
+
     return false;
 }
 
-/* instrumentation: where each frame's time goes */
-static uint32_t ms_video, ms_audio, samples;
-
-/* copy of the last drawn frame (pause menu background; the core's buffer may change later) */
-#define LAST_MAX (512 * 480)
-static uint16_t last_frame[LAST_MAX];
-static int last_w, last_h;
-
-static void video(const void *px, unsigned w, unsigned h, size_t pitch)
+static bool environment(unsigned command, void *data)
 {
-    uint32_t t = plat_ms();
-    if (px) drew = 1; /* skipped frame (null px or no call): neither draws nor waits for the TV */
-    if (px) {
-        plat_present_565(px, w, h, pitch / 2);
-        if (w * h <= LAST_MAX) {
-            for (unsigned y = 0; y < h; y++) memcpy(last_frame + y * w, (const uint8_t *)px + y * pitch, w * 2);
-            last_w = w; last_h = h;
+    switch (command) {
+    case RETRO_ENVIRONMENT_GET_CAN_DUPE: *(bool *)data = true; return true;
+    case RETRO_ENVIRONMENT_SET_PIXEL_FORMAT: return *(enum retro_pixel_format *)data == RETRO_PIXEL_FORMAT_RGB565;
+    case RETRO_ENVIRONMENT_GET_SYSTEM_DIRECTORY:
+    case RETRO_ENVIRONMENT_GET_SAVE_DIRECTORY: *(const char **)data = runner_saves_dir(); return true;
+    case RETRO_ENVIRONMENT_GET_LOG_INTERFACE: ((struct retro_log_callback *)data)->log = log_core_message; return true;
+    case RETRO_ENVIRONMENT_SET_AUDIO_BUFFER_STATUS_CALLBACK: {
+        const struct retro_audio_buffer_status_callback *status = data;
+        runner_audio_set_status_callback(status ? status->callback : NULL);
+
+        return true;
+    }
+    case RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY: return true;
+    case RETRO_ENVIRONMENT_GET_VARIABLE: return get_core_option(data);
+    }
+
+    return false;
+}
+
+static inline void keep_last_frame(const void *pixels, unsigned w, unsigned h, size_t pitch)
+{
+    if (w * h > LAST_FRAME_MAX) {
+        return;
+    }
+    for (unsigned y = 0; y < h; y += 1) {
+        memcpy(last_frame + y * w, (const uint8_t *)pixels + y * pitch, w * BYTES_PER_PIXEL);
+    }
+    last_frame_w = w;
+    last_frame_h = h;
+}
+
+/* A skipped frame (null pixels or no call) neither draws nor waits for the TV. */
+static void video(const void *pixels, unsigned w, unsigned h, size_t pitch)
+{
+    uint32_t started_ms = plat_ms();
+    if (pixels) {
+        drew = 1;
+        plat_present_565(pixels, w, h, pitch / BYTES_PER_PIXEL);
+        keep_last_frame(pixels, w, h, pitch);
+    }
+    stats.video_ms += plat_ms() - started_ms;
+}
+
+const uint16_t *runner_last_frame(int *width, int *height)
+{
+    *width = last_frame_w;
+    *height = last_frame_h;
+
+    return last_frame_w ? last_frame : NULL;
+}
+
+static int first_player_pressing(void)
+{
+    for (int player = 0; player < PLAYERS; player += 1) {
+        if (input.bt[player]) {
+            return player;
         }
     }
-    ms_video += plat_ms() - t;
+
+    return NO_PLAYER;
 }
 
-/* audio: the core hands over the frame's audio here; send_audio() sends it all at the end of the frame */
-#define AUDIO_MAX 4096
-static int16_t audio[(AUDIO_MAX + 1) * 2]; /* audio[0..1] = last audio frame of the previous batch */
-static int naudio;
-
-static void sample(int16_t l, int16_t r)
-{
-    if (naudio < AUDIO_MAX) { audio[2 + naudio * 2] = l; audio[3 + naudio * 2] = r; naudio++; }
-    samples++;
-}
-static size_t batch(const int16_t *s, size_t n)
-{
-    for (size_t q = 0; q < n * 2; q++) sum_sq += (double)s[q] * s[q]; /* core audio level (RMS), for the log */
-    n_sq += n * 2;
-    size_t k = n < (size_t)(AUDIO_MAX - naudio) ? n : (size_t)(AUDIO_MAX - naudio);
-    memcpy(audio + 2 + naudio * 2, s, k * 4);
-    naudio += k;
-    samples += n;
-    return n;
-}
-
-/* Dynamic rate control (same as RetroArch): the TV retrace (59.94 or 60 Hz) does not match
- * the core clock (NES 60.1 Hz), so the frame's audio is stretched or shrunk by up to
- * DRC_MAX depending on whether the device queue is below or above target. Linear resampling. */
-#define QUEUE_TARGET 2000 /* audio frames (~42 ms at 48 kHz); settles slightly below (proportional control) */
-#define DRC_MAX 0.008
-static uint32_t phase; /* fractional position (16.16) inside the batch, carried between frames */
-static double base_ratio = 1.0; /* device rate / core rate */
-static int rate_control, underruns, dropped, queue_sum, queue_count;
-static double ratio_sum;
-
-#define FADE_IN (48000 * 6 / 10) /* audio frames of the soft fade-in */
-static void send_audio(void)
-{
-    static int16_t out[(AUDIO_MAX * 2 + 8) * 2];
-    static int first = 1;
-    int n = naudio;
-    naudio = 0;
-    if (!audio_ok || !n) return;
-    uint32_t t = plat_ms();
-    double ratio = base_ratio; /* output frames per input frame */
-    if (rate_control) {
-        int queue = plat_audio_queue();
-        if (queue >= 0) {
-            if (first || queue < QUEUE_TARGET / 4) {
-                /* start or underrun: fill the queue with silence to avoid crackling */
-                static int16_t zero[QUEUE_TARGET * 2];
-                if (!first) underruns++;
-                plat_audio(zero, QUEUE_TARGET - queue > 0 ? QUEUE_TARGET - queue : 0);
-                queue = plat_audio_queue();
-                first = 0;
-            }
-            double err = (double)(QUEUE_TARGET - queue) / QUEUE_TARGET;
-            if (err > 1) err = 1;
-            if (err < -1) err = -1;
-            ratio = base_ratio * (1.0 + DRC_MAX * err);
-            queue_sum += queue; queue_count++; ratio_sum += ratio;
-        }
-    }
-    int m = 0;
-    if (ratio == 1.0) {
-        memcpy(out, audio + 2, n * 4);
-        m = n;
-    } else {
-        /* audio[0..1] is the last frame of the previous batch: interpolates from audio[i] to audio[i+1] */
-        uint32_t step = (uint32_t)(65536.0 / ratio), pos = phase;
-        while ((int)(pos >> 16) < n) {
-            int i = pos >> 16, f = (pos & 0xffff) >> 1; /* 15 bits: difference x fraction fits in an int */
-            out[m * 2] = audio[i * 2] + (((audio[i * 2 + 2] - audio[i * 2]) * f) >> 15);
-            out[m * 2 + 1] = audio[i * 2 + 1] + (((audio[i * 2 + 3] - audio[i * 2 + 1]) * f) >> 15);
-            m++;
-            pos += step;
-        }
-        phase = pos - ((uint32_t)n << 16);
-    }
-    audio[0] = audio[n * 2]; audio[1] = audio[n * 2 + 1];
-    /* soft fade-in: game audio rises from 0 to normal in 0.6 s (avoids a pop when certain games open) */
-    static int fade_pos;
-    if (fade_pos < FADE_IN)
-        for (int k = 0; k < m && fade_pos < FADE_IN; k++, fade_pos++) {
-            out[k * 2] = out[k * 2] * fade_pos / FADE_IN;
-            out[k * 2 + 1] = out[k * 2 + 1] * fade_pos / FADE_IN;
-        }
-    int sent = plat_audio(out, m);
-    if (sent < m) dropped += m - sent;
-    ms_audio += plat_ms() - t;
-}
 /* Player 1 = the first controller to press any button in game; the other is player 2.
  * This holds until the game quits: turning the other controller on or off midway swaps nobody,
  * so the controller in use can never become 2 and seem dead. */
 static void poll_input(void)
 {
-    static int primary = -1;
+    static int primary = NO_PLAYER;
     plat_input(&input);
-    if (primary < 0) primary = input.bt[0] ? 0 : input.bt[1] ? 1 : -1;
+    if (primary == NO_PLAYER) {
+        primary = first_player_pressing();
+    }
     if (primary == 1) {
-        uint32_t t = input.bt[0];
+        uint32_t first_controller = input.bt[0];
         input.bt[0] = input.bt[1];
-        input.bt[1] = t;
+        input.bt[1] = first_controller;
     }
 }
 
-static int16_t input_state(unsigned port, unsigned device, unsigned idx, unsigned id)
+static uint32_t held_buttons(void)
 {
-    if (port > 1 || device != RETRO_DEVICE_JOYPAD) return 0;
-    static const uint32_t M[16] = {
-        [RETRO_DEVICE_ID_JOYPAD_B] = BTN_B, [RETRO_DEVICE_ID_JOYPAD_Y] = BTN_Y,
-        [RETRO_DEVICE_ID_JOYPAD_SELECT] = BTN_SELECT, [RETRO_DEVICE_ID_JOYPAD_START] = BTN_START,
-        [RETRO_DEVICE_ID_JOYPAD_UP] = BTN_UP, [RETRO_DEVICE_ID_JOYPAD_DOWN] = BTN_DOWN,
-        [RETRO_DEVICE_ID_JOYPAD_LEFT] = BTN_LEFT, [RETRO_DEVICE_ID_JOYPAD_RIGHT] = BTN_RIGHT,
-        [RETRO_DEVICE_ID_JOYPAD_A] = BTN_A, [RETRO_DEVICE_ID_JOYPAD_X] = BTN_X,
-        [RETRO_DEVICE_ID_JOYPAD_L] = BTN_L, [RETRO_DEVICE_ID_JOYPAD_R] = BTN_R,
-    };
-    return id < 16 && (input.bt[port] & M[id]) ? 1 : 0;
+    return input.bt[0] | input.bt[1];
 }
 
-static void save_path(char *out, int max, const char *rom)
+uint32_t runner_poll_buttons(void)
 {
-    const char *b = strrchr(rom, '/');
-    b = b ? b + 1 : rom;
-    snprintf(out, max, "%s/%s", saves_dir, b);
-    char *p = strrchr(out, '.');
-    if (p && p > out + strlen(saves_dir)) strcpy(p, ".srm");
-    else strncat(out, ".srm", max - strlen(out) - 1);
+    poll_input();
+
+    return held_buttons();
 }
 
-static void sram(const char *rom, int writing)
+static int16_t input_state(unsigned port, unsigned device, unsigned index, unsigned id)
 {
-    size_t n = retro_get_memory_size(RETRO_MEMORY_SAVE_RAM);
-    void *m = retro_get_memory_data(RETRO_MEMORY_SAVE_RAM);
-    if (!n || !m) return;
-    char path[600];
-    save_path(path, sizeof path, rom);
-    FILE *f = fopen(path, writing ? "wb" : "rb");
-    if (!f) return;
-    if (writing) fwrite(m, 1, n, f);
-    else if (fread(m, 1, n, f) != n) fprintf(stderr, "incomplete save: %s\n", path);
-    fclose(f);
+    if (port >= PLAYERS || device != RETRO_DEVICE_JOYPAD) {
+        return 0;
+    }
+
+    return id < JOYPAD_IDS && (input.bt[port] & JOYPAD_BUTTONS[id]) ? 1 : 0;
 }
 
-/* ---- save states: <saves>/<game>.st1 and .st2 (slots), .sta (automatic on quit), .last (which was the latest) ---- */
-static const char *current_rom;
-
-static void state_path(char *out, int max, const char *ext)
+static void reset_stats(uint32_t now)
 {
-    save_path(out, max, current_rom);
-    char *p = strrchr(out, '.');
-    if (p) strcpy(p, ext);
+    stats.since_ms = now;
+    stats.run_ms = 0;
+    stats.video_ms = 0;
+    stats.skipped_frames = 0;
+    stats.frames = 0;
 }
 
-static int exists(const char *ext)
+static void log_stats(uint32_t now)
 {
-    char path[600];
-    state_path(path, sizeof path, ext);
-    FILE *f = fopen(path, "rb");
-    if (f) fclose(f);
-    return f != NULL;
+    int duration_ms = now - stats.since_ms;
+    int frames = stats.frames;
+    uint32_t audio_ms = runner_audio_ms();
+    plat_log("game: fps %d", frames * 1000 / duration_ms);
+    /* ms per frame: pure emulation, video (scale + flip) and audio wait */
+    plat_log("game: ms/frame emulation (x10) %d", (int)(stats.run_ms - stats.video_ms - audio_ms) * 10 / frames);
+    plat_log("game: ms/frame video (x10) %d", (int)stats.video_ms * 10 / frames);
+    plat_log("game: ms/frame audio (x10) %d", (int)audio_ms * 10 / frames);
+    plat_log("game: audio samples per second %d", (int)(runner_audio_frames_received() * 1000 / duration_ms));
+    runner_audio_log_queue_stats();
+    plat_log("game: skipped frames %d", (int)stats.skipped_frames);
+    runner_audio_log_level_stats_and_reset();
+    reset_stats(now);
 }
 
-/* slot: '1', '2' or 'a' (automatic). 0 = ok */
-static int save_state(char slot)
+static void install_callbacks(void)
 {
-    size_t n = retro_serialize_size();
-    void *b = n ? malloc(n) : NULL;
-    if (!b || !retro_serialize(b, n)) { free(b); return -1; }
-    char path[600], ext[5] = {'.', 's', 't', slot == 'a' ? 'a' : slot, 0};
-    state_path(path, sizeof path, ext);
-    FILE *f = fopen(path, "wb");
-    int ok = f && fwrite(b, 1, n, f) == n;
-    if (f) { fflush(f); fsync(fileno(f)); fclose(f); }
-    free(b);
-    if (!ok) return -1;
-    state_path(path, sizeof path, ".last");
-    if ((f = fopen(path, "w"))) { fputc(slot, f); fflush(f); fsync(fileno(f)); fclose(f); }
-    plat_log("pause: state saved, slot %d", slot);
-    return 0;
+    retro_set_environment(environment);
+    retro_set_video_refresh(video);
+    retro_set_audio_sample(runner_audio_sample);
+    retro_set_audio_sample_batch(runner_audio_batch);
+    retro_set_input_poll(poll_input);
+    retro_set_input_state(input_state);
 }
 
-static int load_state(char slot)
+static bool load_game(const char *path)
 {
-    char path[600], ext[5] = {'.', 's', 't', slot == 'a' ? 'a' : slot, 0};
-    state_path(path, sizeof path, ext);
-    FILE *f = fopen(path, "rb");
-    if (!f) return -1;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    void *b = n > 0 ? malloc(n) : NULL;
-    int ok = b && fread(b, 1, n, f) == (size_t)n && retro_unserialize(b, n);
-    fclose(f);
-    free(b);
-    plat_log("pause: state loaded %d", ok);
-    return ok ? 0 : -1;
+    FILE *file = fopen(path, "rb");
+    if (!file) {
+        fprintf(stderr, "could not open %s\n", path);
+
+        return false;
+    }
+    fseek(file, 0, SEEK_END);
+    long size = ftell(file);
+    fseek(file, 0, SEEK_SET);
+    struct retro_system_info system_info;
+    retro_get_system_info(&system_info);
+    void *data = NULL;
+    if (system_info.need_fullpath) {
+        size = 0; /* the core reads by path (gpsp pages the ROM): the whole file would not fit the stick's 55 MB */
+    } else {
+        data = malloc(size);
+        if (!data || fread(data, 1, size, file) != (size_t)size) {
+            fclose(file);
+
+            return false;
+        }
+    }
+    fclose(file);
+    plat_log("game: rom loaded in memory (bytes) %d", (int)size);
+    static struct retro_game_info game; /* outlives this call: a core may keep the pointer */
+    game = (struct retro_game_info){path, data, (size_t)size, NULL};
+    if (!retro_load_game(&game)) {
+        fprintf(stderr, "core refused the game\n");
+
+        return false;
+    }
+
+    return true;
 }
 
-static char last_slot(void)
+/* Pacing: TV retrace (stick), blocking audio (PC) or clock (if neither). */
+static void start_audio_and_pacing(void)
 {
-    char path[600];
-    state_path(path, sizeof path, ".last");
-    FILE *f = fopen(path, "r");
-    int c = f ? fgetc(f) : 0;
-    if (f) fclose(f);
-    return c == '1' || c == '2' || c == 'a' ? (char)c : 0;
+    struct retro_system_av_info av;
+    retro_get_system_av_info(&av);
+    runner_audio_open(av.timing.sample_rate);
+    if (av.timing.fps < MIN_RETRACE_FPS || av.timing.fps > MAX_RETRACE_FPS) {
+        plat_disable_retrace();
+    }
+    int pacing = plat_pacing();
+    plat_log("game: core frames per second (x100) %d", (int)(av.timing.fps * 100));
+    runner_audio_set_rate_control(pacing != PACE_AUDIO);
+    plat_log("game: pacing %d (0 clock, 1 TV retrace, 2 audio)", pacing);
+    timing.frame_us = (uint32_t)(1000000.0 / av.timing.fps);
+    timing.next_frame_us = plat_us();
+    /* reference period for lateness: on retrace, never faster than the TV */
+    timing.reference_period_us = pacing == PACE_VIDEO && timing.frame_us < TV_FRAME_US ? TV_FRAME_US : timing.frame_us;
+    reset_stats(plat_ms());
 }
 
-/* silence in the device queue while the game is stopped (an empty queue replays old leftovers) */
-static void idle_audio(void)
+/* Being late against the reference clock makes the core skip drawing. The audio queue alone is not a
+ * usable signal: an underrun is plugged with silence, so it never fires. */
+static void update_frame_skip_hint(void)
 {
-    static int16_t zero[512 * 2];
-    if (!audio_ok) return;
-    int queue = plat_audio_queue();
-    while (queue >= 0 && queue < 4000) {
-        int sent = plat_audio(zero, 512);
-        if (sent <= 0) break;
-        queue += sent;
+    uint32_t now_us = plat_us();
+    if (!timing.reference_us) {
+        timing.reference_us = now_us;
+    }
+    int delay_us = (int)(now_us - timing.reference_us);
+    if (delay_us > (int)timing.reference_period_us * MAX_LATE_FRAMES) {
+        timing.reference_us = now_us;
+        delay_us = 0;
+    }
+    runner_audio_report_status(delay_us, consecutive_skips);
+    timing.reference_us += timing.reference_period_us;
+}
+
+static void run_frame(void)
+{
+    uint32_t started_ms = plat_ms();
+    update_frame_skip_hint();
+    drew = 0;
+    retro_run();
+    consecutive_skips = drew ? 0 : consecutive_skips + 1;
+    stats.skipped_frames += !drew;
+    runner_audio_send();
+    stats.run_ms += plat_ms() - started_ms;
+    stats.frames += 1;
+}
+
+/* The game stopped: the reference clock restarts with no burst of skips, and the stopped time does
+ * not count toward the logged fps. */
+static void resume_after_pause(void)
+{
+    timing.reference_us = 0;
+    timing.next_frame_us = plat_us();
+    timing.quit_held_since_ms = 0;
+    reset_stats(plat_ms());
+    runner_audio_reset_frame_stats();
+}
+
+static bool quit_combo_held_long_enough(uint32_t buttons, uint32_t now)
+{
+    if ((buttons & (BTN_SELECT | BTN_START)) != (BTN_SELECT | BTN_START)) {
+        timing.quit_held_since_ms = 0;
+
+        return false;
+    }
+    if (!timing.quit_held_since_ms) {
+        timing.quit_held_since_ms = now;
+
+        return false;
+    }
+
+    return now - timing.quit_held_since_ms > QUIT_HOLD_MS;
+}
+
+/* Nothing held the pacing, or the retrace stopped working. */
+static void wait_on_clock(void)
+{
+    timing.next_frame_us += timing.frame_us;
+    if (plat_pacing() != PACE_CLOCK) {
+        return;
+    }
+    int left_us = (int)(timing.next_frame_us - plat_us());
+    if (left_us > BUSY_WAIT_MAX_US) {
+        plat_sleep(1);
+    }
+    do {
+        left_us = (int)(timing.next_frame_us - plat_us());
+    } while (left_us > 0);
+    if (left_us < CLOCK_RESYNC_US) {
+        timing.next_frame_us = plat_us();
     }
 }
 
-/* pause menu. Returns 1 if the player chose to quit the game. */
-static int pause_menu(void)
+static void run_until_quit(void)
 {
-    enum { RESUME, SAVE1, SAVE2, LOAD1, LOAD2, LAST, RESTART, QUIT, N };
-    const char *items[N] = {"Resume", "Save to slot 1", "Save to slot 2", "Load slot 1",
-                            "Load slot 2", "Back to last save", "Restart game", "Quit game"};
-    int sel = 0, quit = 0, redraw = 1, confirming = 0; /* confirming: restart asks for a second A */
-    char notice[64] = "";
-    uint32_t prev = BTN_MODE, t_close = 0; /* the MODE that opened it is still held */
-    plat_log("pause: menu opened", 0);
+    uint32_t previous_buttons = 0;
     for (;;) {
-        idle_audio();
-        poll_input();
-        uint32_t bt = input.bt[0] | input.bt[1], pressed = bt & ~prev, now = plat_ms();
-        prev = bt;
-        if (t_close && (int32_t)(now - t_close) >= 0) break;
-        if (bt & BTN_QUIT) { quit = 1; break; }
-        if (!t_close) {
-            if (pressed & (BTN_B | BTN_MODE)) {
-                if (!confirming || pressed & BTN_MODE) break;
-                confirming = 0; notice[0] = 0; redraw = 1; /* B cancels the restart */
-            }
-            if (pressed & BTN_DOWN) { sel = (sel + 1) % N; confirming = 0; notice[0] = 0; redraw = 1; }
-            if (pressed & BTN_UP) { sel = (sel + N - 1) % N; confirming = 0; notice[0] = 0; redraw = 1; }
-            if (pressed & BTN_A && !(bt & (BTN_B | BTN_X | BTN_Y))) {
-                int r = 0;
-                switch (sel) {
-                case RESUME: t_close = now; break;
-                case SAVE1: case SAVE2:
-                    r = save_state(sel == SAVE1 ? '1' : '2');
-                    snprintf(notice, sizeof notice, r ? "Could not save" : "Saved to slot %d", sel == SAVE1 ? 1 : 2);
-                    if (!r) t_close = now + 700;
-                    break;
-                case LOAD1: case LOAD2: case LAST: {
-                    char s = sel == LOAD1 ? '1' : sel == LOAD2 ? '2' : last_slot();
-                    r = s ? load_state(s) : -1;
-                    if (r) snprintf(notice, sizeof notice, s ? "Could not load" : "No save yet");
-                    else t_close = now;
-                    break;
-                }
-                case RESTART:
-                    /* restarting loses progress since the last save: asks for confirmation */
-                    if (!confirming) { confirming = 1; snprintf(notice, sizeof notice, "A again restarts    B cancels"); }
-                    else { retro_reset(); plat_log("pause: game restarted", 0); t_close = now; }
-                    break;
-                case QUIT: quit = 1; break;
-                }
-                if (quit) break;
-                redraw = 1;
-            }
+        run_frame();
+        uint32_t buttons = held_buttons();
+        uint32_t now = plat_ms();
+        if (buttons & BTN_QUIT) {
+            return;
         }
-        if (redraw) {
-            char u = last_slot();
-            const char *notes[N] = {"", exists(".st1") ? "in use" : "empty", exists(".st2") ? "in use" : "empty",
-                                    exists(".st1") ? "" : "empty", exists(".st2") ? "" : "empty",
-                                    u == '1' ? "slot 1" : u == '2' ? "slot 2" : u == 'a' ? "from last quit" : "none",
-                                    "", ""};
-            items[RESTART] = confirming ? "Restart? Confirm with A" : "Restart game";
-            pause_draw(last_w ? last_frame : NULL, last_w, last_h, items, notes, N, sel, notice);
-            redraw = 0;
+        if (buttons & BTN_MODE & ~previous_buttons) {
+            if (runner_pause_menu()) {
+                return;
+            }
+            resume_after_pause();
+            previous_buttons = BTN_MODE;
+            continue;
         }
-        plat_sleep(16);
+        previous_buttons = buttons;
+        if (quit_combo_held_long_enough(buttons, now)) {
+            return;
+        }
+        wait_on_clock();
+        if (now - stats.since_ms >= STATS_PERIOD_MS) {
+            log_stats(now);
+        }
     }
-    plat_log("pause: menu closed, quit %d", quit);
-    return quit;
 }
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) { fprintf(stderr, "usage: %s game [saves folder]\n", argv[0]); return 2; }
-    if (argc > 2) saves_dir = argv[2];
-    if (plat_init()) return 1;
+    if (argc < 2) {
+        fprintf(stderr, "usage: %s game [saves folder]\n", argv[0]);
 
-    retro_set_environment(environment);
-    retro_set_video_refresh(video);
-    retro_set_audio_sample(sample);
-    retro_set_audio_sample_batch(batch);
-    retro_set_input_poll(poll_input);
-    retro_set_input_state(input_state);
+        return 2;
+    }
+    runner_saves_init(argv[1], argc > 2 ? argv[2] : ".");
+    if (plat_init()) {
+        return 1;
+    }
+    install_callbacks();
     retro_init();
-
-    FILE *f = fopen(argv[1], "rb");
-    if (!f) { fprintf(stderr, "could not open %s\n", argv[1]); return 1; }
-    fseek(f, 0, SEEK_END);
-    long size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    /* core that reads by path (gpsp pages the ROM): does not load the whole file into the stick's 55 MB */
-    struct retro_system_info si;
-    retro_get_system_info(&si);
-    void *data = NULL;
-    if (si.need_fullpath) size = 0;
-    else {
-        data = malloc(size);
-        if (!data || fread(data, 1, size, f) != (size_t)size) { fclose(f); return 1; }
+    if (!load_game(argv[1])) {
+        return 1;
     }
-    fclose(f);
-    plat_log("game: rom loaded in memory (bytes) %d", (int)size);
-    struct retro_game_info game = {argv[1], data, (size_t)size, NULL};
-    if (!retro_load_game(&game)) { fprintf(stderr, "core refused the game\n"); return 1; }
-    sram(argv[1], 0);
-    current_rom = argv[1];
-
-    struct retro_system_av_info av;
-    retro_get_system_av_info(&av);
-    /* the device always opens at 48 kHz; core audio is converted (gambatte, gpsp etc. have their own rates) */
-    audio_ok = !plat_audio_init(48000);
-    if (audio_ok && plat_audio_rate() > 0) base_ratio = (double)plat_audio_rate() / av.timing.sample_rate;
-    plat_log("game: audio %d", audio_ok);
-    plat_log("game: sample rate %d", (int)av.timing.sample_rate);
-
-    /* pacing: TV retrace (stick), blocking audio (PC) or clock (if neither).
-     * A core with a rate far from the TV's 60 Hz (WonderSwan 75.47 Hz) cannot follow the retrace: it would run slow. */
-    if (av.timing.fps < 58 || av.timing.fps > 62) plat_disable_retrace();
-    int pacing = plat_pacing();
-    plat_log("game: core frames per second (x100) %d", (int)(av.timing.fps * 100));
-    rate_control = pacing != PACE_AUDIO;
-    plat_log("game: pacing %d (0 clock, 1 TV retrace, 2 audio)", pacing);
-    uint32_t frame_us = (uint32_t)(1000000.0 / av.timing.fps), next = plat_us();
-    /* reference period for lateness: on retrace, never faster than the TV (59.94 Hz) */
-    ref_period = pacing == PACE_VIDEO && frame_us < 16684 ? 16684 : frame_us;
-    uint32_t t_quit = 0, t_fps = plat_ms();
-    int frames = 0;
-    uint32_t ms_run = 0;
-    for (;;) {
-        uint32_t tr = plat_ms();
-        /* Reference clock: when this frame should start. Late = the core skips drawing.
-         * (The audio queue alone is not a usable signal: an underrun is plugged with silence, so it never fires.) */
-        {
-            uint32_t now_us = plat_us();
-            if (!t_ref) t_ref = now_us;
-            int delay = (int)(now_us - t_ref);
-            if (delay > (int)ref_period * 3) { t_ref = now_us; delay = 0; } /* far behind: restart */
-            if (audio_status_cb && audio_ok) {
-                int queue = plat_audio_queue();
-                int fill = queue < 0 ? 50 : queue * 100 / 8192; /* 32 fragments of 1 KB = 8192 frames at 48 kHz */
-                /* at most 2 consecutive skips: in the worst case the image runs at 20 fps, never freezes
-                 * (a limit of 1 is too low: a heavy game may not fit even drawing every other frame) */
-                int skip = consecutive_skips < 2 && (delay > 2000 || (queue >= 0 && queue < QUEUE_TARGET / 4));
-                audio_status_cb(true, fill > 100 ? 100 : fill, skip);
-            }
-            t_ref += ref_period;
-        }
-        drew = 0;
-        retro_run();
-        skipped_last = !drew;
-        consecutive_skips = skipped_last ? consecutive_skips + 1 : 0;
-        skipped_frames += skipped_last;
-        send_audio();
-        ms_run += plat_ms() - tr;
-        frames++;
-        uint32_t bt = input.bt[0] | input.bt[1], now = plat_ms();
-        if (bt & BTN_QUIT) break;
-        /* MODE: pause menu (the game stops; on return the reference clock restarts, with no burst of skips) */
-        static uint32_t prev_mode;
-        if (bt & BTN_MODE & ~prev_mode) {
-            prev_mode = bt;
-            if (pause_menu()) break;
-            t_ref = 0; next = plat_us(); t_quit = 0;
-            /* statistics restart (stopped time does not count toward the logged fps) */
-            frames = 0; t_fps = plat_ms(); ms_run = ms_video = ms_audio = samples = 0; skipped_frames = 0;
-            prev_mode = BTN_MODE;
-            continue;
-        }
-        prev_mode = bt;
-        if ((bt & (BTN_SELECT | BTN_START)) == (BTN_SELECT | BTN_START)) {
-            if (!t_quit) t_quit = now;
-            else if (now - t_quit > 1000) break;
-        } else t_quit = 0;
-        /* nothing held the pacing (or the retrace stopped working): wait on the clock.
-         * usleep here lasts at least ~10 ms (HZ=100), so the rest is a busy wait. */
-        next += frame_us;
-        if (plat_pacing() == PACE_CLOCK) {
-            int left = (int)(next - plat_us());
-            if (left > 12000) plat_sleep(1);
-            while ((left = (int)(next - plat_us())) > 0) {}
-            if (left < -100000) next = plat_us();
-        }
-        if (now - t_fps >= 5000) {
-            int dur = now - t_fps;
-            plat_log("game: fps %d", frames * 1000 / dur);
-            /* ms per frame: pure emulation, video (scale + flip) and audio wait */
-            plat_log("game: ms/frame emulation (x10) %d", (int)(ms_run - ms_video - ms_audio) * 10 / frames);
-            plat_log("game: ms/frame video (x10) %d", (int)ms_video * 10 / frames);
-            plat_log("game: ms/frame audio (x10) %d", (int)ms_audio * 10 / frames);
-            plat_log("game: audio samples per second %d", (int)(samples * 1000 / dur));
-            if (queue_count) {
-                plat_log("audio: average queue %d frames", queue_sum / queue_count);
-                plat_log("audio: average ratio (x100000) %d", (int)(ratio_sum / queue_count * 100000));
-            }
-            plat_log("audio: underruns %d", underruns);
-            plat_log("game: skipped frames %d", (int)skipped_frames);
-            if (n_sq) plat_log("audio: rms level %d", (int)__builtin_sqrt(sum_sq / n_sq));
-            sum_sq = 0; n_sq = 0;
-            skipped_frames = 0;
-            plat_log("audio: dropped frames %d", dropped);
-            frames = 0; t_fps = now; ms_run = ms_video = ms_audio = samples = 0;
-            queue_sum = queue_count = underruns = dropped = 0; ratio_sum = 0;
-        }
-    }
-    sram(argv[1], 1);
-    save_state('a'); /* automatic "last save" on quit */
+    runner_sram_load();
+    start_audio_and_pacing();
+    run_until_quit();
+    runner_sram_save();
+    runner_save_state(SLOT_AUTO);
     retro_unload_game();
     retro_deinit();
     plat_shutdown();
+
     return 0;
 }
