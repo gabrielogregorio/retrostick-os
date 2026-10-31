@@ -14,7 +14,7 @@ all: pc arm
 
 # Generated at build time from the system Noto Sans, not stored in the repo.
 src/font_data.h: tools/gen_font.py
-	python3 tools/gen_font.py
+	$(PY) tools/gen_font.py
 
 out/menu-pc: $(SRC) src/plat_sdl.c src/*.h src/font_data.h
 	cc $(CFLAGS) $(SRC) src/plat_sdl.c -o $@ $$(sdl2-config --cflags --libs) -lm

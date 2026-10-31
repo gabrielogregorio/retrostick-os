@@ -23,6 +23,9 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
       - uses: ./.github/actions/setup-environment
 
+      - name: Lower ASLR entropy (ASan crashes at startup with the runner default)
+        run: sudo sysctl -w vm.mmap_rnd_bits=28
+
       - name: C unit tests
         run: make test-unit PY=.venv/bin/python
 
