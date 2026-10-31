@@ -1,4 +1,23 @@
-# gamestick-os
+<div align="center">
+
+# RetroStick OS
+
+**A custom retro gaming system for the GPL32900B Game Stick 4K. Runs entirely from the SD card, nothing is written to the flash.**
+
+![C](https://img.shields.io/badge/C-11-00599C?style=for-the-badge&logo=c&logoColor=white)
+![libretro](https://img.shields.io/badge/libretro-cores-555555?style=for-the-badge)
+![ARMv6](https://img.shields.io/badge/ARMv6-GPL32900B-0091BD?style=for-the-badge&logo=arm&logoColor=white)
+![SDL2](https://img.shields.io/badge/SDL2-preview-1D4ED8?style=for-the-badge)
+![pytest](https://img.shields.io/badge/pytest-e2e-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
+![Safe](https://img.shields.io/badge/flash-never%20written-2E7D32?style=for-the-badge)
+
+<br>
+
+<img src="docs/demo.gif" alt="The menu running on mock games: carousel of systems, game list with cover and details, favorites and the controller diagnostics screen" width="480">
+
+<sub>Recorded from the real menu with invented games (`make demo`).</sub>
+
+</div>
 
 A retro gaming system (menu plus emulators) for the **Game Stick 4K** built on a **GeneralPlus GPL32900B** board.
 
@@ -54,7 +73,7 @@ cd ..
 The result looks like this:
 
 ```
-gamestick-os/
+retrostick-os/
 ├── Makefile
 ├── src/
 ├── tools/
@@ -76,7 +95,7 @@ gamestick-os/
 make run     # builds for the PC and opens the menu in a 1280x720 window
 make arm     # static binaries for the stick (menu-arm, nes-arm, snes-arm, ...)
 make all     # PC and ARM
-make test    # runs the ARM menu in qemu-arm-static, headless, saves out/stick-shot.png
+make smoke-arm  # runs the ARM menu in qemu-arm-static, headless, saves out/stick-shot.png
 make card    # assembles out/card/retro/
 ```
 
@@ -98,6 +117,40 @@ To run one emulator on the PC without the menu:
 | F2 | Pretend controller 2 connected | | |
 
 Any USB or Bluetooth controller also works on the PC, and its GUIDE button acts as MODE.
+
+## Tests
+
+No test opens a window or needs an emulator core or a ROM: the e2e layer runs the real menu and runner on SDL's dummy drivers, with a mock core (`tests/mock/mock_core.c`) and invented games (`tests/mock/mock_roms.py`).
+
+```bash
+python3 -m venv --system-site-packages .venv
+.venv/bin/pip install -r requirements-dev.txt
+./run-tests.sh        # lint, unit and e2e, ends with ALL GREEN
+```
+
+| Layer | Command | What it covers |
+|---|---|---|
+| Unit, C | `make test-unit` | drawing, menu helpers, favorites, state file, controller packets, audio, with ASan and UBSan |
+| Unit, Python | `.venv/bin/python -m pytest tests/python` | `.rdb` reader, cover title matching, log summary |
+| E2E | `make test-bins`, then `.venv/bin/python -m pytest tests/e2e` | menu navigation, favorites, launching a game, pause menu, save states, restart, quit |
+| ARM | `make out/menu-arm`, then the same pytest | the stick build under qemu; skipped when the binary is missing |
+
+Any scripted run works by hand too:
+
+```bash
+SDL_VIDEODRIVER=dummy STICK_ROMS=roms STICK_KEYS=R,D,D,A STICK_SHOT=out/shot.ppm out/test/menu-sdl
+```
+
+`STICK_KEYS` takes `U D L R A B X Y S T M`, one key every 15 input reads, and `.` for a pause. `make demo` records `docs/demo.gif` the same way.
+
+## CI
+
+GitHub Actions runs on `dev`, `main` and pull requests into `main`:
+
+- **Tests:** C and Python unit tests, e2e on SDL, and the ARM menu built with `gcc-arm-linux-gnueabi` and run under qemu.
+- **Lint:** ruff, shellcheck, C without warnings, pinned actions, valid YAML, a light GIF, and no ROM, firmware or core in the repo.
+- **CodeQL:** C, Python and the workflows.
+- **Release:** merging a pull request into `main` creates the tag `vX.Y.Z` from `VERSION` and a release with the source tarball. Each pull request must bump `VERSION`.
 
 ## Preparing the card
 
