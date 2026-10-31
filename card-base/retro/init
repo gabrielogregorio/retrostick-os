@@ -1,5 +1,5 @@
 #!/bin/sh
-# Custom menu on the game stick (GeneralPlus GPL32900B). Writes NOTHING to the flash.
+# Custom menu on the stick (GeneralPlus GPL32900B). Writes NOTHING to the flash.
 # Starts our menu directly, WITHOUT the 10 in 1 (audio and screen stay ours alone).
 # The menu does not depend on a controller: controllers can be turned on and off at any time.
 # Opening a game: the menu writes launch.txt (runner, game, saves folder) and exits with code 10; this script

@@ -47,7 +47,7 @@ jobs:
       - name: build the source tarball
         if: env.SKIP != 'true'
         run: |
-          NAME="retrostick-os-$VERSION"
+          NAME="retrostick-$VERSION"
           mkdir -p dist
           git archive --format=tar.gz --prefix="$NAME/" -o "dist/$NAME.tar.gz" HEAD
           (cd dist && sha256sum "$NAME.tar.gz" > SHA256SUMS)

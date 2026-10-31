@@ -1,5 +1,5 @@
 /* Platform layer: the menu only talks to this.
- * plat_sdl.c = window on the PC; plat_stick.c = framebuffer + serial on the game stick. */
+ * plat_sdl.c = window on the PC; plat_stick.c = framebuffer + serial on the stick. */
 #pragma once
 #include <stdint.h>
 

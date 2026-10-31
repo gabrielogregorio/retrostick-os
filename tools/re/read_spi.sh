@@ -1,5 +1,5 @@
 #!/bin/bash
-# Reads the game stick SPI flash with a CH341. READ-ONLY: never uses -w, -E or write -v.
+# Reads the stick SPI flash with a CH341. READ-ONLY: never uses -w, -E or write -v.
 # Usage: read_spi.sh            -> XM25QH64A (the stick chip): identifies it and reads twice
 #        read_spi.sh XM25QH64C  -> forces the model (when flashrom finds more than one)
 set -u

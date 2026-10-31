@@ -1,4 +1,4 @@
-/* Game stick platform (GeneralPlus GPL32900B): /dev/fb0 + receiver on /dev/ttyS1.
+/* Stick platform (GeneralPlus GPL32900B): /dev/fb0 + receiver on /dev/ttyS1.
  *
  * Receiver: 115200 8N1, 9-byte packet
  *   0A 09 PP xx xx xx B6 B7 CK   PP 02 = player 1, 03 = player 2

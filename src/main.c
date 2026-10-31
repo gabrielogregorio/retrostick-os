@@ -1,4 +1,4 @@
-/* Game stick menu: system carousel + game list + diagnostics screen.
+/* Stick menu: system carousel + game list + diagnostics screen.
  * Same base on PC (plat_sdl.c) and on the stick (plat_stick.c). */
 #include <dirent.h>
 #include <stdio.h>

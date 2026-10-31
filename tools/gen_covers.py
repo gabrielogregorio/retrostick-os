@@ -143,7 +143,7 @@ def download_cover(base, name, network=True):
     url = 'https://thumbnails.libretro.com/' + urllib.parse.quote(base) + '/Named_Boxarts/' + urllib.parse.quote(filename)
     try:
         time.sleep(1)
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'retrostick-os/1'}), timeout=20) as r:
+        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'retrostick/1'}), timeout=20) as r:
             data = r.read()
     except urllib.error.HTTPError as e:
         if e.code == 404:

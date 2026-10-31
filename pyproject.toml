@@ -1,5 +1,5 @@
 [project]
-name = "retrostick-os"
+name = "retrostick"
 version = "1.0.0"
 description = "Retro gaming system for the GPL32900B Game Stick 4K, runs entirely from the SD card"
 requires-python = ">=3.10"
