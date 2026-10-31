@@ -93,7 +93,7 @@ cd ..
 The result looks like this:
 
 ```
-retrostick/
+retrostick-os/
 ├── Makefile
 ├── src/
 ├── tools/
