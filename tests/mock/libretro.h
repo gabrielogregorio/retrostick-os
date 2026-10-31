@@ -1,4 +1,4 @@
-/* Minimal subset of the libretro API, only what src/runner.c needs, so the tests build and run
+/* Minimal subset of the libretro API, only what the runner needs, so the tests build and run
  * without any emulator core. The real header ships with the cores. */
 #pragma once
 #include <stdbool.h>
@@ -30,22 +30,51 @@
 #define RETRO_DEVICE_ID_JOYPAD_R 11
 
 enum retro_log_level { RETRO_LOG_DEBUG, RETRO_LOG_INFO, RETRO_LOG_WARN, RETRO_LOG_ERROR };
+
 enum retro_pixel_format { RETRO_PIXEL_FORMAT_0RGB1555, RETRO_PIXEL_FORMAT_XRGB8888, RETRO_PIXEL_FORMAT_RGB565 };
 
 typedef void (*retro_log_printf_t)(enum retro_log_level level, const char *fmt, ...);
-struct retro_log_callback { retro_log_printf_t log; };
-struct retro_variable { const char *key; const char *value; };
+
+struct retro_log_callback {
+    retro_log_printf_t log;
+};
+
+struct retro_variable {
+    const char *key;
+    const char *value;
+};
+
 typedef void (*retro_audio_buffer_status_callback_t)(bool active, unsigned occupancy, bool underrun_likely);
-struct retro_audio_buffer_status_callback { retro_audio_buffer_status_callback_t callback; };
+
+struct retro_audio_buffer_status_callback {
+    retro_audio_buffer_status_callback_t callback;
+};
 
 struct retro_system_info {
     const char *library_name, *library_version, *valid_extensions;
     bool need_fullpath, block_extract;
 };
-struct retro_game_info { const char *path; const void *data; size_t size; const char *meta; };
-struct retro_game_geometry { unsigned base_width, base_height, max_width, max_height; float aspect_ratio; };
-struct retro_system_timing { double fps, sample_rate; };
-struct retro_system_av_info { struct retro_game_geometry geometry; struct retro_system_timing timing; };
+
+struct retro_game_info {
+    const char *path;
+    const void *data;
+    size_t size;
+    const char *meta;
+};
+
+struct retro_game_geometry {
+    unsigned base_width, base_height, max_width, max_height;
+    float aspect_ratio;
+};
+
+struct retro_system_timing {
+    double fps, sample_rate;
+};
+
+struct retro_system_av_info {
+    struct retro_game_geometry geometry;
+    struct retro_system_timing timing;
+};
 
 typedef bool (*retro_environment_t)(unsigned cmd, void *data);
 typedef void (*retro_video_refresh_t)(const void *data, unsigned width, unsigned height, size_t pitch);
