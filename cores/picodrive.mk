@@ -4,6 +4,10 @@
 # with the PC compiler (the generator has to run here, and a command-line CC would take over).
 # PC: builds in a copy (out/pc/src-picodrive) so objects do not mix with the ARM build.
 ARCH ?= arm
+# Our ARCH is an arm|pc switch, but Makefile.libretro has a CPU variable with the same name: keep ours
+# off the sub-make command line and environment, or it would override what that Makefile sets or detects.
+MAKEOVERRIDES := $(filter-out ARCH=%,$(MAKEOVERRIDES))
+unexport ARCH
 P := cores/picodrive
 T := $(CURDIR)/toolchain/arm-linux-musleabi-cross/bin/arm-linux-musleabi-
 F := -mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=softfp

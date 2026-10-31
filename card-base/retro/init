@@ -10,7 +10,7 @@ R=/usr/retro
 P=$R/log-steps.txt
 step() { echo "$(cat /proc/uptime) $*" >> $P; sync; }
 
-step "1 inicio, abrindo o menu sem 10in1"
+step "1 start, opening the menu without 10in1"
 while true; do
     STICK_GAME_VIA_INIT=1 STICK_ROMS=$R/roms STICK_LOG=$R/log-stick.txt $R/menu-arm >> $R/log-menu.txt 2>&1
     rc=$?
@@ -24,5 +24,5 @@ while true; do
     STICK_ROMS=$R/roms STICK_LOG=$R/log-stick.txt "$prog" "$game" "$saves" >> $R/log-menu.txt 2>&1
     step "game exited (code $?)"
 done
-step "2 menu saiu (codigo $rc), subindo o 10in1"
+step "2 menu exited (code $rc), starting the 10in1"
 /system/app/main &
