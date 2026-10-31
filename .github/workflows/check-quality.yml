@@ -1,0 +1,64 @@
+name: check lint
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint (ruff, shellcheck, compiler warnings)
+    timeout-minutes: 10
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+      - uses: ./.github/actions/setup-environment
+
+      - name: Ruff
+        run: .venv/bin/ruff check --output-format=github .
+
+      - name: ShellCheck
+        run: shellcheck --severity=warning ./*.sh tools/*.sh tools/re/*.sh card-base/retro/init
+
+      - name: C builds without warnings
+        run: |
+          make src/font_data.h PY=.venv/bin/python
+          gcc -fsyntax-only -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers \
+            -Isrc $(sdl2-config --cflags) src/main.c src/gfx.c src/aero.c src/icons.c src/music.c src/chip.c \
+            src/pause.c src/plat_exec.c src/plat_sdl.c tools/gen_audio.c
+          gcc -fsyntax-only -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers \
+            -Isrc -Itests/mock src/runner.c tests/mock/mock_core.c
+
+      - name: Scripts are executable in git
+        run: |
+          bad=$(git ls-files -s '*.sh' card-base/retro/init | awk '$1 != "100755" {print $4}')
+          if [[ -n "$bad" ]]; then
+            for f in $bad; do echo "::error file=$f::not executable in git: git update-index --chmod=+x $f"; done
+            exit 1
+          fi
+
+      - name: Actions are pinned to a commit hash
+        run: |
+          bad=$(grep -rnE '^\s*(- )?uses:\s' .github | grep -vE 'uses:\s+\./' | grep -vE '@[0-9a-f]{40}( |$)' || true)
+          if [[ -n "$bad" ]]; then
+            echo "$bad" | while IFS=: read -r f l _; do echo "::error file=$f,line=$l::pin this action to a full commit hash (# vX.Y.Z as comment)"; done
+            exit 1
+          fi
+
+      - name: Workflow files are valid YAML
+        run: .venv/bin/python -c "import sys, yaml; [yaml.safe_load(open(f)) for f in sys.argv[1:]]" .github/workflows/*.yml .github/ISSUE_TEMPLATE/*.yml .github/actions/*/action.yml .github/dependabot.yml
+
+      - name: The README GIF stays light
+        run: test "$(stat -c %s docs/demo.gif)" -lt 1048576
+
+      - name: No ROM, firmware or core in the repo
+        run: |
+          bad=$(git ls-files | grep -iE '\.(nes|sfc|smc|md|gen|gba|gb|gbc|sms|gg|a26|ngp|ngc|ws|wsc|ko|bin)$|^cores/.*/' || true)
+          if [[ -n "$bad" ]]; then
+            echo "$bad" | while read -r f; do echo "::error file=$f::this file type must not be in the repo"; done
+            exit 1
+          fi

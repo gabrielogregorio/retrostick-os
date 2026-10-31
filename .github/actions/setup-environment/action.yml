@@ -1,0 +1,20 @@
+name: 'Setup Environment'
+description: 'Installs the build tools from apt and creates the venv with the pinned dev tools'
+runs:
+  using: 'composite'
+  steps:
+    - name: Build tools (apt)
+      shell: bash
+      run: |
+        sudo apt-get update -qq
+        sudo apt-get install -y -qq --no-install-recommends \
+          build-essential libsdl2-dev zlib1g-dev fonts-noto-core shellcheck \
+          gcc-arm-linux-gnueabi qemu-user-static > /dev/null
+
+    - name: Python venv (pinned dev tools)
+      shell: bash
+      run: |
+        python3 -m venv .venv
+        .venv/bin/pip install --quiet --upgrade pip
+        .venv/bin/pip install --quiet -r requirements-dev.txt
+        .venv/bin/python --version
