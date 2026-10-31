@@ -10,6 +10,7 @@
 ![SDL2](https://img.shields.io/badge/SDL2-preview-1D4ED8?style=for-the-badge)
 ![pytest](https://img.shields.io/badge/pytest-e2e-0A9EDC?style=for-the-badge&logo=pytest&logoColor=white)
 ![Safe](https://img.shields.io/badge/flash-never%20written-2E7D32?style=for-the-badge)
+![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
 
 <br>
 
@@ -283,6 +284,10 @@ This repo contains only original code. It documents hardware interfaces (ioctl n
 | Noto Sans | SIL OFL; used at build time from the system font, not stored in the repo |
 | Factory firmware | Never stored in the repo |
 | ROMs | Supplied by you, never included |
+
+## License
+
+The code in this repository is under the [MIT License](LICENSE). It covers only this repository. Each emulator core keeps its own license: a binary linked with a GPL core must follow the GPL, and cores under non-commercial terms, such as snes9x2002 and picodrive, cannot be sold. ROMs and the factory firmware are not covered.
 
 ## Supported systems
 
