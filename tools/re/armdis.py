@@ -6,80 +6,144 @@ Usage: venv/bin/python tools/armdis.py <elf> <func> [func...]
 Read-only.
 """
 import sys
+from dataclasses import dataclass, field
+from typing import Any
+
+from capstone import CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_THUMB, Cs
 from elftools.elf.elffile import ELFFile
-from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_THUMB
 
-path = sys.argv[1]
-f = open(path, 'rb')
-elf = ELFFile(f)
-data = open(path, 'rb').read()
-
-segs = [(s['p_vaddr'], s['p_offset'], s['p_filesz']) for s in elf.iter_segments() if s['p_type'] == 'PT_LOAD']
-
-
-def rd(addr, n):
-    for va, off, sz in segs:
-        if va <= addr < va + sz:
-            o = off + addr - va
-            return data[o:o + n]
-    return None
+PLT_HEADER_SIZE = 20
+PLT_ENTRY_SIZE = 12
+MAX_STRING_BYTES = 200
+MIN_STRING_LENGTH = 3
+PRINTABLE_FIRST = 32
+PRINTABLE_LIMIT = 127
+STRING_WHITESPACE = (9, 10)
+WORD_SIZE = 4
+ARM_PC_OFFSET = 8  # the pc reads as the current instruction + 8 in ARM mode, + 4 in Thumb
+THUMB_PC_OFFSET = 4
+BRANCH_MNEMONICS = ('bl', 'blx', 'b')
 
 
-def cstr(addr):
-    b = rd(addr, 200)
-    if not b:
+@dataclass
+class Binary:
+    data: bytes
+    segments: list[tuple[int, int, int]]  # (virtual address, file offset, file size)
+    functions: dict[str, tuple[int, int]] = field(default_factory=dict)  # name -> (address, size)
+    names_by_address: dict[int, str] = field(default_factory=dict)
+
+    def read(self, address: int, length: int) -> bytes | None:
+        for virtual_address, file_offset, file_size in self.segments:
+            if virtual_address <= address < virtual_address + file_size:
+                start = file_offset + address - virtual_address
+
+                return self.data[start:start + length]
+
         return None
-    s = b.split(b'\0')[0]
-    if len(s) >= 3 and all(32 <= c < 127 or c in (9, 10) for c in s):
-        return s.decode()
-    return None
+
+    def c_string(self, address: int) -> str | None:
+        raw = self.read(address, MAX_STRING_BYTES)
+        if not raw:
+            return None
+        text = raw.split(b'\0')[0]
+        printable = all(PRINTABLE_FIRST <= char < PRINTABLE_LIMIT or char in STRING_WHITESPACE for char in text)
+        if len(text) >= MIN_STRING_LENGTH and printable:
+            return text.decode()
+
+        return None
 
 
-syms = {}
-byaddr = {}
-for sec in elf.iter_sections():
-    if sec.header['sh_type'] in ('SHT_SYMTAB', 'SHT_DYNSYM'):
-        for s in sec.iter_symbols():
-            if s['st_info']['type'] == 'STT_FUNC' and s['st_value']:
-                syms[s.name] = (s['st_value'], s['st_size'])
-                byaddr[s['st_value'] & ~1] = s.name
+def load_symbols(elf: ELFFile, binary: Binary) -> None:
+    for section in elf.iter_sections():
+        if section.header['sh_type'] not in ('SHT_SYMTAB', 'SHT_DYNSYM'):
+            continue
+        for symbol in section.iter_symbols():
+            if symbol['st_info']['type'] == 'STT_FUNC' and symbol['st_value']:
+                binary.functions[symbol.name] = (symbol['st_value'], symbol['st_size'])
+                binary.names_by_address[symbol['st_value'] & ~1] = symbol.name
 
-# PLT: resolved through .rel.plt (each PLT entry = 12 bytes, after a 20-byte header)
-plt = elf.get_section_by_name('.plt')
-relplt = elf.get_section_by_name('.rel.plt')
-if plt and relplt:
-    dsym = elf.get_section(relplt['sh_link'])
-    for i, r in enumerate(relplt.iter_relocations()):
-        byaddr[plt['sh_addr'] + 20 + 12 * i] = dsym.get_symbol(r['r_info_sym']).name + '@plt'
 
-if sys.argv[2] == '--list':
-    flt = sys.argv[3] if len(sys.argv) > 3 else ''
-    for n, (a, s) in sorted(syms.items(), key=lambda x: x[1]):
-        if flt in n:
-            print(f'{a:08x} {s:6d} {n}')
-    sys.exit()
+def load_plt_names(elf: ELFFile, binary: Binary) -> None:
+    """PLT entries resolve through .rel.plt."""
+    plt = elf.get_section_by_name('.plt')
+    relocations = elf.get_section_by_name('.rel.plt')
+    if not plt or not relocations:
+        return
+    dynamic_symbols = elf.get_section(relocations['sh_link'])
+    for index, relocation in enumerate(relocations.iter_relocations()):
+        address = plt['sh_addr'] + PLT_HEADER_SIZE + PLT_ENTRY_SIZE * index
+        binary.names_by_address[address] = dynamic_symbols.get_symbol(relocation['r_info_sym']).name + '@plt'
 
-for name in sys.argv[2:]:
-    a, size = syms[name]
-    thumb = a & 1
-    md = Cs(CS_ARCH_ARM, CS_MODE_THUMB if thumb else CS_MODE_ARM)
-    a &= ~1
-    print(f'==== {name} @ {a:08x} ({size} bytes, {"thumb" if thumb else "arm"})')
-    for ins in md.disasm(rd(a, size), a):
-        note = ''
-        if ins.mnemonic.startswith('ldr') and '[pc' in ins.op_str:
-            try:
-                imm = int(ins.op_str.split('#')[-1].rstrip(']'), 0)
-            except ValueError:
-                imm = 0
-            lit = ((ins.address + (4 if thumb else 8)) & ~3) + imm
-            b = rd(lit, 4)
-            if b:
-                v = int.from_bytes(b, 'little')
-                s = cstr(v)
-                note = f'  ; ={v:#x}' + (f' "{s}"' if s else '') + (f' <{byaddr[v]}>' if v in byaddr else '')
-        if ins.mnemonic in ('bl', 'blx', 'b') and ins.op_str.startswith('#'):
-            t = int(ins.op_str[1:], 0)
-            if t in byaddr:
-                note = f'  ; <{byaddr[t]}>'
-        print(f'{ins.address:08x}: {ins.mnemonic:8s} {ins.op_str}{note}')
+
+def load_binary(path: str) -> Binary:
+    with open(path, 'rb') as file:
+        elf = ELFFile(file)
+        segments = [(segment['p_vaddr'], segment['p_offset'], segment['p_filesz'])
+                    for segment in elf.iter_segments() if segment['p_type'] == 'PT_LOAD']
+        file.seek(0)
+        binary = Binary(file.read(), segments)
+        load_symbols(elf, binary)
+        load_plt_names(elf, binary)
+
+    return binary
+
+
+def literal_note(binary: Binary, instruction: Any, thumb: int) -> str:
+    try:
+        immediate = int(instruction.op_str.split('#')[-1].rstrip(']'), 0)
+    except ValueError:
+        immediate = 0
+    pc_offset = THUMB_PC_OFFSET if thumb else ARM_PC_OFFSET
+    literal_address = ((instruction.address + pc_offset) & ~3) + immediate
+    literal = binary.read(literal_address, WORD_SIZE)
+    if not literal:
+        return ''
+    value = int.from_bytes(literal, 'little')
+    text = binary.c_string(value)
+    string_note = f' "{text}"' if text else ''
+    symbol_note = f' <{binary.names_by_address[value]}>' if value in binary.names_by_address else ''
+
+    return f'  ; ={value:#x}' + string_note + symbol_note
+
+
+def instruction_note(binary: Binary, instruction: Any, thumb: int) -> str:
+    note = ''
+    if instruction.mnemonic.startswith('ldr') and '[pc' in instruction.op_str:
+        note = literal_note(binary, instruction, thumb)
+    if instruction.mnemonic in BRANCH_MNEMONICS and instruction.op_str.startswith('#'):
+        target = int(instruction.op_str[1:], 0)
+        if target in binary.names_by_address:
+            note = f'  ; <{binary.names_by_address[target]}>'
+
+    return note
+
+
+def disassemble(binary: Binary, name: str) -> None:
+    address, size = binary.functions[name]
+    thumb = address & 1
+    disassembler = Cs(CS_ARCH_ARM, CS_MODE_THUMB if thumb else CS_MODE_ARM)
+    address &= ~1
+    print(f'==== {name} @ {address:08x} ({size} bytes, {"thumb" if thumb else "arm"})')
+    for instruction in disassembler.disasm(binary.read(address, size), address):
+        note = instruction_note(binary, instruction, thumb)
+        print(f'{instruction.address:08x}: {instruction.mnemonic:8s} {instruction.op_str}{note}')
+
+
+def list_functions(binary: Binary, name_filter: str) -> None:
+    for name, (address, size) in sorted(binary.functions.items(), key=lambda item: item[1]):
+        if name_filter in name:
+            print(f'{address:08x} {size:6d} {name}')
+
+
+def main() -> None:
+    binary = load_binary(sys.argv[1])
+    if sys.argv[2] == '--list':
+        list_functions(binary, sys.argv[3] if len(sys.argv) > 3 else '')
+
+        return
+    for name in sys.argv[2:]:
+        disassemble(binary, name)
+
+
+if __name__ == '__main__':
+    main()

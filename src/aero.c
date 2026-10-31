@@ -1,188 +1,370 @@
-/* "Aero" theme (glossy desktop look): sky, light, aurora, hills, bubbles and glass.
- * The background is built ONCE (expensive, uses float); each frame adds only bubbles and panels. */
+/* "Aero" theme: sky, light, aurora, hills, bubbles and glass.
+ * The background is built once (expensive, uses float); each frame adds only bubbles and panels. */
 #include <math.h>
 #include <stdlib.h>
 #include "aero.h"
 #include "gfx.h"
 
-static float clamp01(float x) { return x < 0 ? 0 : x > 1 ? 1 : x; }
+#define OPAQUE 255
+#define WHITE 0xffffff
+#define DEEP_NAVY 0x06203a
+
+#define SKY_SPLIT 0.55f
+#define SKY_FADE 0.2f
+#define TINT_STRENGTH 0.10f
+#define SUN_X_RATIO 0.82f
+#define SUN_Y_RATIO 0.08f
+#define SUN_RAY_COUNT 7
+
+#define BOKEH_SEED 7
+#define BOKEH_COUNT 18
+#define BOKEH_MIN_RADIUS 6
+#define BOKEH_RADIUS_RANGE 22
+#define BOKEH_ALPHA 46
+
+#define BUBBLE_SEED 3
+#define BUBBLE_COUNT 6
+#define BUBBLE_SIZES 3
+#define BUBBLE_EDGE 1.02f
+#define BUBBLE_PHASE_STEPS 628 /* a full turn in hundredths of a radian */
+
+typedef struct {
+    float r, g, b;
+} color_t;
+
+typedef struct {
+    color_t crest, foot;
+    float edge_strength;
+} hill_t;
+
+typedef struct {
+    int r, size;
+    uint32_t *color;
+    uint8_t *alpha;
+} bubble_sprite_t;
+
+typedef struct {
+    float x, y, speed, phase, sway;
+    int size_class;
+} bubble_t;
+
+static const color_t SKY_TOP = {0.02f, 0.40f, 0.78f};
+static const color_t SKY_MIDDLE = {0.40f, 0.80f, 0.97f};
+static const color_t SKY_HORIZON = {0.88f, 0.97f, 1.0f};
+static const color_t AURORA_WHITE = {1.0f, 1.0f, 1.0f};
+static const color_t AURORA_GREEN = {0.55f, 0.98f, 0.85f};
+static const hill_t BACK_HILL = {{0.62f, 0.92f, 0.42f}, {0.30f, 0.72f, 0.28f}, 0.6f};
+static const hill_t FRONT_HILL = {{0.45f, 0.85f, 0.30f}, {0.10f, 0.52f, 0.22f}, 0.7f};
+
+static struct {
+    bubble_sprite_t sprites[BUBBLE_SIZES];
+    bubble_t bubbles[BUBBLE_COUNT];
+    int screen_w, screen_h;
+} field;
+
+static float clamp01(float value)
+{
+    if (value < 0) {
+        return 0;
+    }
+    if (value > 1) {
+        return 1;
+    }
+
+    return value;
+}
+
 static uint32_t rgb(float r, float g, float b)
 {
     return ((uint32_t)(clamp01(r) * 255) << 16) | ((uint32_t)(clamp01(g) * 255) << 8) | (uint32_t)(clamp01(b) * 255);
 }
-static void color_to_float(uint32_t c, float *r, float *g, float *b)
-{
-    *r = ((c >> 16) & 255) / 255.0f; *g = ((c >> 8) & 255) / 255.0f; *b = (c & 255) / 255.0f;
-}
-static float lerpf(float a, float b, float t) { return a + (b - a) * t; }
 
-void aero_background(uint32_t *px, int w, int h, uint32_t tint)
+static color_t color_from_rgb(uint32_t color)
 {
-    float tr, tg, tb;
-    color_to_float(tint, &tr, &tg, &tb);
-    const float sx = w * 0.82f, sy = h * 0.08f; /* sun */
-    for (int y = 0; y < h; y++)
-        for (int x = 0; x < w; x++) {
-            float fy = (float)y / h;
-            /* sky: deep blue -> cyan -> almost white at the horizon */
-            float r, g, b;
-            if (fy < 0.55f) { float t = fy / 0.55f; r = lerpf(0.02f, 0.40f, t); g = lerpf(0.40f, 0.80f, t); b = lerpf(0.78f, 0.97f, t); }
-            else { float t = clamp01((fy - 0.55f) / 0.2f); r = lerpf(0.40f, 0.88f, t); g = lerpf(0.80f, 0.97f, t); b = lerpf(0.97f, 1.0f, t); }
-            /* optional light tint (0 = no tint) */
-            if (tint) { r = lerpf(r, tr, 0.10f); g = lerpf(g, tg, 0.10f); b = lerpf(b, tb, 0.10f); }
-            /* sun glow and light rays */
-            float dx = x - sx, dy = y - sy, d = sqrtf(dx * dx + dy * dy) / w;
-            float glow = expf(-d * 4.5f) * 0.55f;
-            float ang = atan2f(dy, dx);
-            float ray = powf(fabsf(sinf(ang * 7 + 0.6f)), 10) * expf(-d * 2.2f) * 0.22f;
-            r += glow + ray; g += glow + ray; b += glow * 0.8f + ray;
-            /* aurora ribbons */
-            float c1 = h * 0.42f + h * 0.10f * sinf(x * 0.011f + 0.8f) + h * 0.03f * sinf(x * 0.031f);
-            float a1 = expf(-powf((y - c1) / (h * 0.045f), 2)) * 0.35f;
-            float c2 = h * 0.52f + h * 0.07f * sinf(x * 0.008f + 2.6f);
-            float a2 = expf(-powf((y - c2) / (h * 0.03f), 2)) * 0.28f;
-            r = lerpf(r, 1.0f, a1); g = lerpf(g, 1.0f, a1); b = lerpf(b, 1.0f, a1);
-            r = lerpf(r, 0.55f, a2); g = lerpf(g, 0.98f, a2); b = lerpf(b, 0.85f, a2);
-            /* hills: the back one lighter, the front one deeper; glowing edge */
-            float h1 = h * 0.74f + h * 0.05f * sinf(x * 0.009f + 1.0f);
-            float h2 = h * 0.82f + h * 0.06f * sinf(x * 0.007f + 3.0f) + h * 0.015f * sinf(x * 0.023f);
-            float m1 = clamp01(y - h1 + 0.5f), m2 = clamp01(y - h2 + 0.5f);
-            if (m1 > 0) {
-                float t = clamp01((y - h1) / (h - h1));
-                float cr = lerpf(0.62f, 0.30f, t), cg = lerpf(0.92f, 0.72f, t), cb = lerpf(0.42f, 0.28f, t);
-                float edge = expf(-(y - h1) / 3.0f) * 0.6f;
-                cr += edge; cg += edge; cb += edge;
-                r = lerpf(r, cr, m1); g = lerpf(g, cg, m1); b = lerpf(b, cb, m1);
+    color_t result = {((color >> 16) & 255) / 255.0f, ((color >> 8) & 255) / 255.0f, (color & 255) / 255.0f};
+
+    return result;
+}
+
+static float lerpf(float from, float to, float amount)
+{
+    return from + (to - from) * amount;
+}
+
+static color_t color_lerp(color_t from, color_t to, float amount)
+{
+    color_t result = {lerpf(from.r, to.r, amount), lerpf(from.g, to.g, amount), lerpf(from.b, to.b, amount)};
+
+    return result;
+}
+
+static float gaussian(float distance, float width)
+{
+    return expf(-powf(distance / width, 2));
+}
+
+/* Deep blue to cyan to almost white at the horizon. */
+static color_t sky_gradient(float height_ratio)
+{
+    if (height_ratio < SKY_SPLIT) {
+        return color_lerp(SKY_TOP, SKY_MIDDLE, height_ratio / SKY_SPLIT);
+    }
+
+    return color_lerp(SKY_MIDDLE, SKY_HORIZON, clamp01((height_ratio - SKY_SPLIT) / SKY_FADE));
+}
+
+static color_t add_sun_light(color_t pixel, float dx, float dy, int w)
+{
+    float distance = sqrtf(dx * dx + dy * dy) / w;
+    float glow = expf(-distance * 4.5f) * 0.55f;
+    float angle = atan2f(dy, dx);
+    float ray = powf(fabsf(sinf(angle * SUN_RAY_COUNT + 0.6f)), 10) * expf(-distance * 2.2f) * 0.22f;
+    pixel.r += glow + ray;
+    pixel.g += glow + ray;
+    pixel.b += glow * 0.8f + ray;
+
+    return pixel;
+}
+
+static color_t add_aurora(color_t pixel, int x, int y, int h)
+{
+    float center_a = h * 0.42f + h * 0.10f * sinf(x * 0.011f + 0.8f) + h * 0.03f * sinf(x * 0.031f);
+    float strength_a = gaussian(y - center_a, h * 0.045f) * 0.35f;
+    float center_b = h * 0.52f + h * 0.07f * sinf(x * 0.008f + 2.6f);
+    float strength_b = gaussian(y - center_b, h * 0.03f) * 0.28f;
+    pixel = color_lerp(pixel, AURORA_WHITE, strength_a);
+
+    return color_lerp(pixel, AURORA_GREEN, strength_b);
+}
+
+/* Grass color at y: crest to foot gradient, with a glowing edge at the ridge plus sun shine. */
+static color_t hill_color(const hill_t *hill, int y, float ridge, int h, float shine)
+{
+    color_t color = color_lerp(hill->crest, hill->foot, clamp01((y - ridge) / (h - ridge)));
+    float edge = expf(-(y - ridge) / 3.0f) * hill->edge_strength;
+    color.r += edge + shine;
+    color.g += edge + shine;
+    color.b += edge + shine * 0.6f;
+
+    return color;
+}
+
+static color_t add_back_hill(color_t pixel, int x, int y, int h)
+{
+    float ridge = h * 0.74f + h * 0.05f * sinf(x * 0.009f + 1.0f);
+    float coverage = clamp01(y - ridge + 0.5f);
+    if (coverage <= 0) {
+        return pixel;
+    }
+
+    return color_lerp(pixel, hill_color(&BACK_HILL, y, ridge, h, 0), coverage);
+}
+
+/* The front hill also reflects the sun on the grass, on the right. */
+static color_t add_front_hill(color_t pixel, int x, int y, int h, float sun_x, int w)
+{
+    float ridge = h * 0.82f + h * 0.06f * sinf(x * 0.007f + 3.0f) + h * 0.015f * sinf(x * 0.023f);
+    float coverage = clamp01(y - ridge + 0.5f);
+    if (coverage <= 0) {
+        return pixel;
+    }
+    float shine = gaussian(x - sun_x, w * 0.25f) * expf(-(y - ridge) / 12.0f) * 0.35f;
+
+    return color_lerp(pixel, hill_color(&FRONT_HILL, y, ridge, h, shine), coverage);
+}
+
+static void draw_bokeh_disc(uint32_t *px, int w, int h, int center_x, int center_y, int radius)
+{
+    for (int dy = -radius; dy <= radius; dy += 1) {
+        for (int dx = -radius; dx <= radius; dx += 1) {
+            float distance = sqrtf(dx * dx + dy * dy) / radius;
+            if (distance > 1) {
+                continue;
             }
-            if (m2 > 0) {
-                float t = clamp01((y - h2) / (h - h2));
-                float cr = lerpf(0.45f, 0.10f, t), cg = lerpf(0.85f, 0.52f, t), cb = lerpf(0.30f, 0.22f, t);
-                float edge = expf(-(y - h2) / 3.0f) * 0.7f;
-                /* light reflection on the grass, on the right (sun side) */
-                float shine = expf(-powf((x - sx) / (w * 0.25f), 2)) * expf(-(y - h2) / 12.0f) * 0.35f;
-                cr += edge + shine; cg += edge + shine; cb += edge + shine * 0.6f;
-                r = lerpf(r, cr, m2); g = lerpf(g, cg, m2); b = lerpf(b, cb, m2);
+            int alpha = (int)((0.25f + 0.75f * powf(distance, 6)) * (1 - powf(distance, 24)) * BOKEH_ALPHA);
+            int x = center_x + dx;
+            int y = center_y + dy;
+            if (x >= 0 && x < w && y >= 0 && y < h) {
+                px[y * w + x] = gfx_blend(px[y * w + x], WHITE, alpha);
             }
-            px[y * w + x] = rgb(r, g, b);
         }
-    /* fixed bokeh in the sky */
-    gfx_target(px, w, h);
-    srand(7);
-    for (int i = 0; i < 18; i++) {
-        int bx = rand() % w, by = rand() % (h * 2 / 3), br = 6 + rand() % 22;
-        for (int y = -br; y <= br; y++)
-            for (int x = -br; x <= br; x++) {
-                float d = sqrtf(x * x + y * y) / br;
-                if (d > 1) continue;
-                int a = (int)((0.25f + 0.75f * powf(d, 6)) * (1 - powf(d, 24)) * 46);
-                int xx = bx + x, yy = by + y;
-                if (xx >= 0 && xx < w && yy >= 0 && yy < h) px[yy * w + xx] = gfx_blend(px[yy * w + xx], 0xffffff, a);
-            }
     }
 }
 
-/* ---------- soap bubbles (sprites with per-pixel alpha) ---------- */
-typedef struct { int r, d; uint32_t *color; uint8_t *alpha; } bubble_sprite_t;
-static bubble_sprite_t spr[3];
-
-static void build_bubble(bubble_sprite_t *s, int r)
+static void draw_sky_bokeh(uint32_t *px, int w, int h)
 {
-    s->r = r; s->d = r * 2 + 1;
-    s->color = malloc(s->d * s->d * 4);
-    s->alpha = malloc(s->d * s->d);
-    for (int y = 0; y < s->d; y++)
-        for (int x = 0; x < s->d; x++) {
-            float fx = (x - r) / (float)r, fy = (y - r) / (float)r, d = sqrtf(fx * fx + fy * fy);
-            float a = 0, cr = 0.85f, cg = 0.97f, cb = 1.0f;
-            if (d <= 1.02f) {
-                float aa = clamp01((1.02f - d) * r);              /* soft edge */
-                a = (0.10f + 0.65f * powf(d, 5)) * aa;            /* rim stronger than the middle */
-                /* light iridescence on the rim */
-                cr = 0.80f + 0.2f * sinf(fx * 3 + 1); cg = 0.92f + 0.08f * sinf(fy * 3); cb = 1.0f;
-                /* main reflection (upper left) */
-                float hx = (fx + 0.38f) / 0.36f, hy = (fy + 0.42f) / 0.22f, hd = hx * hx + hy * hy;
-                if (hd < 1) { float t = 1 - hd; a = a + (1 - a) * t * 0.9f; cr = lerpf(cr, 1, t); cg = lerpf(cg, 1, t); }
-                /* small reflection at the lower right */
-                float kx = (fx - 0.45f) / 0.15f, ky = (fy - 0.5f) / 0.1f, kd = kx * kx + ky * ky;
-                if (kd < 1) a = a + (1 - a) * (1 - kd) * 0.5f;
-            }
-            s->color[y * s->d + x] = rgb(cr, cg, cb);
-            s->alpha[y * s->d + x] = (uint8_t)(clamp01(a) * 255);
-        }
+    srand(BOKEH_SEED);
+    for (int disc = 0; disc < BOKEH_COUNT; disc += 1) {
+        int center_x = rand() % w;
+        int center_y = rand() % (h * 2 / 3);
+        int radius = BOKEH_MIN_RADIUS + rand() % BOKEH_RADIUS_RANGE;
+        draw_bokeh_disc(px, w, h, center_x, center_y, radius);
+    }
 }
 
-typedef struct { float x, y, speed, phase, osc; int size; } bubble_t;
-#define NUM_BUBBLES 6
-static bubble_t bubbles[NUM_BUBBLES];
-static int bw, bh;
+void aero_background(uint32_t *px, int w, int h, uint32_t tint)
+{
+    color_t tint_color = color_from_rgb(tint);
+    const float sun_x = w * SUN_X_RATIO;
+    const float sun_y = h * SUN_Y_RATIO;
+    for (int y = 0; y < h; y += 1) {
+        for (int x = 0; x < w; x += 1) {
+            color_t pixel = sky_gradient((float)y / h);
+            if (tint) {
+                pixel = color_lerp(pixel, tint_color, TINT_STRENGTH);
+            }
+            pixel = add_sun_light(pixel, x - sun_x, y - sun_y, w);
+            pixel = add_aurora(pixel, x, y, h);
+            pixel = add_back_hill(pixel, x, y, h);
+            pixel = add_front_hill(pixel, x, y, h, sun_x, w);
+            px[y * w + x] = rgb(pixel.r, pixel.g, pixel.b);
+        }
+    }
+    gfx_target(px, w, h);
+    draw_sky_bokeh(px, w, h);
+}
+
+/* Color and alpha of one soap bubble pixel, at (fx, fy) in -1..1 from the center. */
+static void bubble_pixel(float fx, float fy, int radius, color_t *color, float *alpha)
+{
+    float distance = sqrtf(fx * fx + fy * fy);
+    color->r = 0.85f;
+    color->g = 0.97f;
+    color->b = 1.0f;
+    *alpha = 0;
+    if (distance > BUBBLE_EDGE) {
+        return;
+    }
+    float soft_edge = clamp01((BUBBLE_EDGE - distance) * radius);
+    float opacity = (0.10f + 0.65f * powf(distance, 5)) * soft_edge; /* rim stronger than the middle */
+    /* light iridescence on the rim */
+    color->r = 0.80f + 0.2f * sinf(fx * 3 + 1);
+    color->g = 0.92f + 0.08f * sinf(fy * 3);
+    color->b = 1.0f;
+    /* main reflection, upper left */
+    float main_x = (fx + 0.38f) / 0.36f;
+    float main_y = (fy + 0.42f) / 0.22f;
+    float main_distance = main_x * main_x + main_y * main_y;
+    if (main_distance < 1) {
+        float strength = 1 - main_distance;
+        opacity = opacity + (1 - opacity) * strength * 0.9f;
+        color->r = lerpf(color->r, 1, strength);
+        color->g = lerpf(color->g, 1, strength);
+    }
+    /* small reflection, lower right */
+    float small_x = (fx - 0.45f) / 0.15f;
+    float small_y = (fy - 0.5f) / 0.1f;
+    float small_distance = small_x * small_x + small_y * small_y;
+    if (small_distance < 1) {
+        opacity = opacity + (1 - opacity) * (1 - small_distance) * 0.5f;
+    }
+    *alpha = opacity;
+}
+
+static void build_bubble(bubble_sprite_t *sprite, int radius)
+{
+    sprite->r = radius;
+    sprite->size = radius * 2 + 1;
+    sprite->color = malloc(sprite->size * sprite->size * sizeof(uint32_t));
+    sprite->alpha = malloc(sprite->size * sprite->size);
+    for (int y = 0; y < sprite->size; y += 1) {
+        for (int x = 0; x < sprite->size; x += 1) {
+            float fx = (x - radius) / (float)radius;
+            float fy = (y - radius) / (float)radius;
+            color_t color;
+            float alpha;
+            bubble_pixel(fx, fy, radius, &color, &alpha);
+            sprite->color[y * sprite->size + x] = rgb(color.r, color.g, color.b);
+            sprite->alpha[y * sprite->size + x] = (uint8_t)(clamp01(alpha) * 255);
+        }
+    }
+}
 
 void aero_init(int w, int h)
 {
-    bw = w; bh = h;
-    build_bubble(&spr[0], 7);
-    build_bubble(&spr[1], 12);
-    build_bubble(&spr[2], 19);
-    srand(3);
-    for (int i = 0; i < NUM_BUBBLES; i++) {
-        bubbles[i].x = rand() % w;
-        bubbles[i].y = rand() % h;
-        bubbles[i].size = i % 3;
-        bubbles[i].speed = 6 + rand() % 10 + bubbles[i].size * 3; /* px per second */
-        bubbles[i].phase = (rand() % 628) / 100.0f;
-        bubbles[i].osc = 6 + rand() % 14;
+    field.screen_w = w;
+    field.screen_h = h;
+    build_bubble(&field.sprites[0], 7);
+    build_bubble(&field.sprites[1], 12);
+    build_bubble(&field.sprites[2], 19);
+    srand(BUBBLE_SEED);
+    for (int index = 0; index < BUBBLE_COUNT; index += 1) {
+        bubble_t *bubble = &field.bubbles[index];
+        bubble->x = rand() % w;
+        bubble->y = rand() % h;
+        bubble->size_class = index % BUBBLE_SIZES;
+        bubble->speed = 6 + rand() % 10 + bubble->size_class * 3; /* px per second */
+        bubble->phase = (rand() % BUBBLE_PHASE_STEPS) / 100.0f;
+        bubble->sway = 6 + rand() % 14;
+    }
+}
+
+static inline void blit_bubble(uint32_t *px, const bubble_sprite_t *sprite, int left, int top)
+{
+    const int screen_w = field.screen_w;
+    const int screen_h = field.screen_h;
+    const int size = sprite->size;
+    for (int row = 0; row < size; row += 1) {
+        int y = top + row;
+        if ((unsigned)y >= (unsigned)screen_h) {
+            continue;
+        }
+        for (int column = 0; column < size; column += 1) {
+            int x = left + column;
+            int alpha = sprite->alpha[row * size + column];
+            if (!alpha || (unsigned)x >= (unsigned)screen_w) {
+                continue;
+            }
+            uint32_t *pixel = &px[y * screen_w + x];
+            *pixel = gfx_blend(*pixel, sprite->color[row * size + column], alpha);
+        }
     }
 }
 
 void aero_bubbles(uint32_t *px, float secs)
 {
-    for (int i = 0; i < NUM_BUBBLES; i++) {
-        bubble_t *b = &bubbles[i];
-        bubble_sprite_t *s = &spr[b->size];
-        float y = fmodf(b->y - secs * b->speed, bh + s->d * 2.0f);
-        if (y < 0) y += bh + s->d * 2.0f;
-        y -= s->d;
-        int x0 = (int)(b->x + sinf(secs * 0.6f + b->phase) * b->osc) - s->r, y0 = (int)y - s->r;
-        for (int j = 0; j < s->d; j++) {
-            int yy = y0 + j;
-            if ((unsigned)yy >= (unsigned)bh) continue;
-            for (int k = 0; k < s->d; k++) {
-                int xx = x0 + k, a = s->alpha[j * s->d + k];
-                if (!a || (unsigned)xx >= (unsigned)bw) continue;
-                uint32_t *d = &px[yy * bw + xx];
-                *d = gfx_blend(*d, s->color[j * s->d + k], a);
-            }
+    for (int index = 0; index < BUBBLE_COUNT; index += 1) {
+        const bubble_t *bubble = &field.bubbles[index];
+        const bubble_sprite_t *sprite = &field.sprites[bubble->size_class];
+        float y = fmodf(bubble->y - secs * bubble->speed, field.screen_h + sprite->size * 2.0f);
+        if (y < 0) {
+            y += field.screen_h + sprite->size * 2.0f;
         }
+        y -= sprite->size;
+        int left = (int)(bubble->x + sinf(secs * 0.6f + bubble->phase) * bubble->sway) - sprite->r;
+        int top = (int)y - sprite->r;
+        blit_bubble(px, sprite, left, top);
     }
 }
 
-/* ---------- glass pieces ---------- */
-void aero_glass(int x, int y, int w, int h, int r, int alpha)
+void aero_glass(int x, int y, int w, int h, int radius, int alpha)
 {
-    gfx_round_rect(x - 1, y - 1, w + 2, h + 2, r + 1, 0x1a5f8f, alpha / 5);       /* thin blue outline */
-    gfx_round_rect_grad(x, y, w, h, r, 0xffffff, 0xe4f4ff, alpha);                 /* frosted glass */
-    gfx_round_rect_grad(x + 2, y + 2, w - 4, h / 3, r - 1, 0xffffff, 0xffffff, alpha / 2); /* shine at the top */
+    gfx_round_rect(x - 1, y - 1, w + 2, h + 2, radius + 1, 0x1a5f8f, alpha / 5);          /* thin blue outline */
+    gfx_round_rect_grad(x, y, w, h, radius, WHITE, 0xe4f4ff, alpha);                      /* frosted glass */
+    gfx_round_rect_grad(x + 2, y + 2, w - 4, h / 3, radius - 1, WHITE, WHITE, alpha / 2); /* shine at the top */
 }
 
-void aero_pill(int x, int y, int w, int h, int r, uint32_t color, int alpha)
+void aero_pill(int x, int y, int w, int h, int radius, uint32_t color, int alpha)
 {
-    gfx_round_rect(x + 2, y + 4, w, h, r, 0x0a3a5a, alpha / 4);                   /* shadow (bluish, never black) */
-    gfx_round_rect_grad(x, y, w, h, r, gfx_blend(color, 0xffffff, 70), gfx_blend(color, 0x06203a, 70), alpha);
+    gfx_round_rect(x + 2, y + 4, w, h, radius, 0x0a3a5a, alpha / 4); /* shadow (bluish, never black) */
+    gfx_round_rect_grad(x, y, w, h, radius, gfx_blend(color, WHITE, 70), gfx_blend(color, DEEP_NAVY, 70), alpha);
     /* glass reflection on the upper half */
-    gfx_round_rect_grad(x + 3, y + 2, w - 6, h * 46 / 100, r - 2, gfx_blend(color, 0xffffff, 230),
-                       gfx_blend(color, 0xffffff, 120), alpha * 170 / 255);
+    gfx_round_rect_grad(x + 3, y + 2, w - 6, h * 46 / 100, radius - 2, gfx_blend(color, WHITE, 230),
+                        gfx_blend(color, WHITE, 120), alpha * 170 / OPAQUE);
     /* bounced light at the bottom */
-    gfx_round_rect_grad(x + r / 2, y + h * 70 / 100, w - r, h * 25 / 100, r / 2, gfx_blend(color, 0x06203a, 40),
-                       gfx_blend(color, 0xffffff, 110), alpha * 120 / 255);
+    gfx_round_rect_grad(x + radius / 2, y + h * 70 / 100, w - radius, h * 25 / 100, radius / 2,
+                        gfx_blend(color, DEEP_NAVY, 40), gfx_blend(color, WHITE, 110), alpha * 120 / OPAQUE);
 }
 
-void aero_orb(int cx, int cy, int r, uint32_t color, int alpha)
+void aero_orb(int cx, int cy, int radius, uint32_t color, int alpha)
 {
-    aero_pill(cx - r, cy - r, r * 2, r * 2, r, color, alpha);
+    aero_pill(cx - radius, cy - radius, radius * 2, radius * 2, radius, color, alpha);
 }
 
-void aero_text(const font_t *f, int x, int y, const char *t, uint32_t color, int alpha)
+void aero_text(const font_t *font, int x, int y, const char *text, uint32_t color, int alpha)
 {
-    uint32_t shadow = (color & 0xff) > 0x80 ? 0x0a3050 : 0xffffff; /* light text: dark blue shadow; dark text: white halo */
-    gfx_text(f, x + 1, y + 1, t, shadow, alpha * 110 / 255);
-    gfx_text(f, x, y, t, color, alpha);
+    /* light text gets a dark blue shadow, dark text a white halo */
+    uint32_t shadow = (color & 0xff) > 0x80 ? 0x0a3050 : WHITE;
+    gfx_text(font, x + 1, y + 1, text, shadow, alpha * 110 / OPAQUE);
+    gfx_text(font, x, y, text, color, alpha);
 }

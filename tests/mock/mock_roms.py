@@ -22,46 +22,60 @@ GAMES = {
     'gba': [('Pocket Quest', '2002', 'Adventure', 'Demo Labs', 'A portable tale made for this demo.')],
 }
 EXT = {'nes': '.nes', 'snes': '.sfc', 'md': '.md', 'gba': '.gba'}
-COVER_W, COVER_H = 60, 86
+COVER_W = 60
+COVER_H = 86
+PALETTE_SIZE = 16
+BAND_COLOR = PALETTE_SIZE - 1
+LAST_GRADIENT_COLOR = PALETTE_SIZE - 2
+BAND_PERIOD = 60
+BAND_HALF_WIDTH = 5
+SEED_HUE_STEP = 0.13
 
 
-def rgb565(r, g, b):
-    return (r >> 3) << 11 | (g >> 2) << 5 | b >> 3
+def rgb565(red: int, green: int, blue: int) -> int:
+    return (red >> 3) << 11 | (green >> 2) << 5 | blue >> 3
 
 
-def cover(seed):
-    """CAP1 cover: a gradient plus a light diagonal band, unique per game."""
+def cover_palette(seed: int) -> list[int]:
     palette = []
-    for i in range(16):
-        r, g, b = colorsys.hsv_to_rgb((seed * 0.13) % 1, 0.75 - i * 0.03, 0.25 + i * 0.05)
-        palette.append(rgb565(int(r * 255), int(g * 255), int(b * 255)))
+    for level in range(PALETTE_SIZE):
+        red, green, blue = colorsys.hsv_to_rgb((seed * SEED_HUE_STEP) % 1, 0.75 - level * 0.03, 0.25 + level * 0.05)
+        palette.append(rgb565(int(red * 255), int(green * 255), int(blue * 255)))
+
+    return palette
+
+
+def cover_pixel(x: int, y: int) -> int:
+    in_band = abs((x + y) % BAND_PERIOD - BAND_PERIOD // 2) < BAND_HALF_WIDTH
+
+    return BAND_COLOR if in_band else min(LAST_GRADIENT_COLOR, y * BAND_COLOR // COVER_H)
+
+
+def cover(seed: int) -> bytes:
+    """CAP1 cover: a gradient plus a light diagonal band, unique per game."""
     data = bytearray(b'CAP1' + struct.pack('<HH', COVER_W, COVER_H))
-    for color in palette:
+    for color in cover_palette(seed):
         data += struct.pack('<H', color)
-    index = []
-    for y in range(COVER_H):
-        for x in range(COVER_W):
-            band = abs((x + y) % 60 - 30) < 5
-            index.append(15 if band else min(14, y * 15 // COVER_H))
-    for i in range(0, len(index), 2):
-        data.append(index[i] << 4 | index[i + 1])
+    pixels = [cover_pixel(x, y) for y in range(COVER_H) for x in range(COVER_W)]
+    for index in range(0, len(pixels), 2):
+        data.append(pixels[index] << 4 | pixels[index + 1])
 
     return bytes(data)
 
 
-def build(root):
+def build(root: str) -> None:
     seed = 0
     for system, games in GAMES.items():
         meta = os.path.join(root, system, '.meta')
         os.makedirs(meta, exist_ok=True)
-        for title, year, genre, dev, text in games:
+        for title, year, genre, developer, text in games:
             seed += 1
-            with open(os.path.join(root, system, title + EXT[system]), 'wb') as f:
-                f.write(b'MOCK' + title.encode())
-            with open(os.path.join(meta, title + '.txt'), 'w', encoding='utf-8') as f:
-                f.write(f'{year}\n{genre}\n{dev}\n{text}\n')
-            with open(os.path.join(meta, title + '.cap'), 'wb') as f:
-                f.write(cover(seed))
+            with open(os.path.join(root, system, title + EXT[system]), 'wb') as file:
+                file.write(b'MOCK' + title.encode())
+            with open(os.path.join(meta, title + '.txt'), 'w', encoding='utf-8') as file:
+                file.write(f'{year}\n{genre}\n{developer}\n{text}\n')
+            with open(os.path.join(meta, title + '.cap'), 'wb') as file:
+                file.write(cover(seed))
 
 
 if __name__ == '__main__':

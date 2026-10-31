@@ -4,16 +4,20 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-WORK=$(mktemp -d)
-mkdir -p "$WORK/retro/saves" "$WORK/frames"
-python3 tests/mock/mock_roms.py "$WORK/retro/roms"
-ROOT=$PWD
+work_dir=$(mktemp -d)
+project=$PWD
+key_script=.,D,D,D,Y,.,.,.,.,R,.,D,D,.,R,.,D,.,S,.,.,.,.,.
+scale_filter="fps=12,scale=400:-1:flags=lanczos"
+palette_gen="palettegen=max_colors=64:stats_mode=diff"
+palette_use="paletteuse=dither=none:diff_mode=rectangle"
 
-(cd "$WORK/retro" && SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy SDL_RENDER_DRIVER=software \
-    STICK_ROMS="$WORK/retro/roms" STICK_FRAMES="$WORK/frames" STICK_MUSIC=0 \
-    STICK_KEYS=.,D,D,D,Y,.,.,.,.,R,.,D,D,.,R,.,D,.,S,.,.,.,.,. "$ROOT/out/test/menu-sdl")
+mkdir -p "$work_dir/retro/saves" "$work_dir/frames"
+python3 tests/mock/mock_roms.py "$work_dir/retro/roms"
 
-ffmpeg -v error -y -framerate 30 -i "$WORK/frames/%05d.ppm" \
-    -vf "fps=12,scale=400:-1:flags=lanczos,split[a][b];[a]palettegen=max_colors=64:stats_mode=diff[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
-    docs/demo.gif
+(cd "$work_dir/retro" && SDL_VIDEODRIVER=dummy SDL_AUDIODRIVER=dummy SDL_RENDER_DRIVER=software \
+    STICK_ROMS="$work_dir/retro/roms" STICK_FRAMES="$work_dir/frames" STICK_MUSIC=0 \
+    STICK_KEYS=$key_script "$project/out/test/menu-sdl")
+
+ffmpeg -v error -y -framerate 30 -i "$work_dir/frames/%05d.ppm" \
+    -vf "${scale_filter},split[a][b];[a]${palette_gen}[p];[b][p]${palette_use}" docs/demo.gif
 ls -la docs/demo.gif

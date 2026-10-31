@@ -30,22 +30,43 @@ import json
 import os
 import re
 import struct
-import sys
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
-import zlib
+from dataclasses import dataclass, field
+from typing import Any
 
 from PIL import Image, PngImagePlugin
+from rdb import REGION_TAIL_RE, RdbCatalog, load_rdb, rdb_details
+
+Record = dict[str, Any]
+Cover = tuple[bytes, Image.Image]
 
 PngImagePlugin.MAX_TEXT_CHUNK = 64 * 1024 * 1024  # some libretro covers carry a huge EXIF block
 
-sys.path.insert(0, os.path.dirname(__file__))
-from rdb import read_rdb  # noqa: E402
-
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
-COVER_W, COVER_H, COLORS = 60, 86, 16  # at 4 bits per pixel a cover stays around 2.6 KB
+COVER_CACHE = os.path.join(ROOT, 'cache', 'libretro-covers')
+DEFAULT_RDB_GLOB = '~/.local/share/flatpak/app/org.libretro.RetroArch/*/stable/active/files/share/libretro/database/rdb'
+THUMBNAILS_URL = 'https://thumbnails.libretro.com/'
+USER_AGENT = 'retrostick-os/1'
+DOWNLOAD_DELAY_SECS = 1
+DOWNLOAD_TIMEOUT_SECS = 20
+HTTP_NOT_FOUND = 404
+
+COVER_W = 60  # at 4 bits per pixel a cover stays around 2.6 KB
+COVER_H = 86
+COLORS = 16
+COVER_MAGIC = b'CAP1'
+PREVIEW_GAP = 4
+PREVIEW_SCALE = 2
+
+EXTENSION_RE = re.compile(r'\.[a-z0-9]{1,4}$')
+ARTICLE_RE = re.compile(r'^the |, the\b')
+NON_ALPHANUMERIC_RE = re.compile(r'[^a-z0-9]')
+UNSAFE_FILENAME_RE = re.compile(r'[&*/:`<>?\\|"]')
+YEAR_RE = re.compile(r'\b(19[789]\d|20[0-2]\d)\b')
 
 # menu system -> (.rdb databases, size of the header some ROMs have)
 SYSTEMS = {
@@ -62,222 +83,346 @@ SYSTEMS = {
 }
 
 # prefix of the collection folders of each system
-FOLDERS = {'nes': ('NES',), 'snes': ('SFC', 'SMC'), 'md': ('MD', 'BIN_MEGA', 'ZIP_BIN_MEGA'), 'sms': ('SMS',),
-           'gba': ('GBA',), 'gb': ('GB_', 'GBC', 'SGB'), 'gg': ('GG_',), 'a26': ('A26', 'BIN_ATARI', 'ZIP_A26'),
-           'ngp': ('NGC', 'NGP'), 'ws': ('WS_', 'WSC')}
+FOLDERS = {
+    'nes': ('NES',),
+    'snes': ('SFC', 'SMC'),
+    'md': ('MD', 'BIN_MEGA', 'ZIP_BIN_MEGA'),
+    'sms': ('SMS',),
+    'gba': ('GBA',),
+    'gb': ('GB_', 'GBC', 'SGB'),
+    'gg': ('GG_',),
+    'a26': ('A26', 'BIN_ATARI', 'ZIP_A26'),
+    'ngp': ('NGC', 'NGP'),
+    'ws': ('WS_', 'WSC'),
+}
 
 GENRES = {  # libretro genres -> label shown on the game details
-    'Action': 'Action', 'Platform': 'Platform', 'Shooter': 'Shooter', "Beat'em Up": "Beat 'em up",
-    'Role-playing (RPG)': 'RPG', 'Sports': 'Sports', 'Racing': 'Racing', 'Puzzle': 'Puzzle',
-    'Fighting': 'Fighting', 'Adventure': 'Adventure', 'Strategy': 'Strategy', 'Simulation': 'Simulation',
-    'Shoot\'em Up': "Shoot 'em up", 'Boxing': 'Boxing', 'Board game': 'Board game', 'Pinball': 'Pinball',
+    'Action': 'Action',
+    'Platform': 'Platform',
+    'Shooter': 'Shooter',
+    "Beat'em Up": "Beat 'em up",
+    'Role-playing (RPG)': 'RPG',
+    'Sports': 'Sports',
+    'Racing': 'Racing',
+    'Puzzle': 'Puzzle',
+    'Fighting': 'Fighting',
+    'Adventure': 'Adventure',
+    'Strategy': 'Strategy',
+    'Simulation': 'Simulation',
+    "Shoot'em Up": "Shoot 'em up",
+    'Boxing': 'Boxing',
+    'Board game': 'Board game',
+    'Pinball': 'Pinball',
 }
 
 
-def title_key(name):
-    """Title without region/version/extension, article or punctuation: 'Some Game, The (USA).sfc' -> 'somegame'."""
-    t = re.sub(r'\.[a-z0-9]{1,4}$', '', (name or '').lower())
-    t = re.sub(r'\s*[\(\[].*$', '', t).replace('pokémon', 'pokemon').replace('&', 'and').replace('_', ' ')
-    t = re.sub(r'^the |, the\b', ' ', t)
-    return re.sub(r'[^a-z0-9]', '', t)
+@dataclass
+class Collection:
+    root: str
+    by_file: dict[str, list[Record]] = field(default_factory=dict)  # some names repeat across systems
+    by_title: dict[tuple[str, str], list[Record]] = field(default_factory=dict)  # (system, title key) -> records
 
 
-def base_title(name):
-    return re.sub(r'\s*[\(\[].*$', '', name or '').strip().lower()
+@dataclass
+class Totals:
+    games: int = 0
+    cover_bytes: int = 0
+    previews: list[Image.Image] = field(default_factory=list)
 
 
-def load_rdb(folder, bases):
-    by_crc, by_name, by_base = {}, {}, {}
-    for b in bases:
-        path = os.path.join(folder, b + '.rdb')
-        if not os.path.exists(path):
-            print(f'  warning: missing {path}')
-            continue
-        for x in read_rdb(path):
-            n = x.get('name')
-            if isinstance(x.get('crc'), bytes) and n:
-                by_crc.setdefault(x['crc'].hex(), (n, b))
-            if n:
-                m = by_name.setdefault(n, {})
-                for k in ('releaseyear', 'genre', 'developer', 'publisher'):
-                    if k in x and k not in m:
-                        m[k] = x[k]
-                if 'releaseyear' in x:
-                    tb = base_title(n)
-                    by_base[tb] = min(by_base.get(tb, 9999), x['releaseyear'])
-    return by_crc, by_name, by_base
+@dataclass
+class SystemJob:
+    name: str
+    bases: list[str]
+    header: int
+    folder: str
+    meta: str
+    catalog: RdbCatalog
 
 
-def rdb_details(rom, header, by_crc, by_name, by_base):
-    b = open(rom, 'rb').read()
-    candidates = [b]
-    if header and len(b) % 1024 == header % 1024 and len(b) > header:
-        candidates.append(b[header:])
-    elif header == 16 and b[:4] == b'NES\x1a':
-        candidates.append(b[16:])
-    for c in candidates:
-        found = by_crc.get(format(zlib.crc32(c), '08x'))
-        if found:
-            n, base = found
-            m = dict(by_name.get(n, {}))
-            if 'releaseyear' not in m and base_title(n) in by_base:
-                m['releaseyear'] = by_base[base_title(n)]
-            m['_base'] = base
-            return n, m
-    return None, {}
+class CoverDownloader:
+    """libretro-thumbnails covers by catalog name (No-Intro).
 
+    Local cache; one request at a time; stops at the first block.
+    """
 
-CACHE = os.path.join(ROOT, 'cache', 'libretro-covers')
-blocked = False
+    def __init__(self, network: bool) -> None:
+        self.network = network
+        self.blocked = False
 
-
-def download_cover(base, name, network=True):
-    """libretro-thumbnails cover by catalog name (No-Intro). Local cache; one request at a time; stops at the first block."""
-    global blocked
-    filename = re.sub(r'[&*/:`<>?\\|"]', '_', name) + '.png'
-    local = os.path.join(CACHE, base, filename)
-    if os.path.exists(local):
-        return local
-    if blocked or not network:
-        return ''
-    url = 'https://thumbnails.libretro.com/' + urllib.parse.quote(base) + '/Named_Boxarts/' + urllib.parse.quote(filename)
-    try:
-        time.sleep(1)
-        with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'retrostick-os/1'}), timeout=20) as r:
-            data = r.read()
-    except urllib.error.HTTPError as e:
-        if e.code == 404:
-            print(f'    (libretro has no cover: {name})')
+    def fetch(self, base: str, name: str) -> str:
+        filename = UNSAFE_FILENAME_RE.sub('_', name) + '.png'
+        local = os.path.join(COVER_CACHE, base, filename)
+        if os.path.exists(local):
+            return local
+        if self.blocked or not self.network:
             return ''
-        print(f'    STOPPING downloads: HTTP {e.code} on {url}')
-        blocked = True
-        return ''
-    except Exception as e:
-        print(f'    STOPPING downloads: {e}')
-        blocked = True
-        return ''
-    os.makedirs(os.path.dirname(local), exist_ok=True)
-    open(local, 'wb').write(data)
-    print(f'    downloaded: {name}')
-    return local
+        data = self._download(base, filename, name)
+        if data is None:
+            return ''
+        os.makedirs(os.path.dirname(local), exist_ok=True)
+        with open(local, 'wb') as file:
+            file.write(data)
+        print(f'    downloaded: {name}')
+
+        return local
+
+    def _download(self, base: str, filename: str, name: str) -> bytes | None:
+        url = THUMBNAILS_URL + urllib.parse.quote(base) + '/Named_Boxarts/' + urllib.parse.quote(filename)
+        request = urllib.request.Request(url, headers={'User-Agent': USER_AGENT})
+        try:
+            time.sleep(DOWNLOAD_DELAY_SECS)
+            with urllib.request.urlopen(request, timeout=DOWNLOAD_TIMEOUT_SECS) as response:
+                return response.read()
+        except urllib.error.HTTPError as error:
+            if error.code == HTTP_NOT_FOUND:
+                print(f'    (libretro has no cover: {name})')
+
+                return None
+            print(f'    STOPPING downloads: HTTP {error.code} on {url}')
+        except Exception as error:
+            print(f'    STOPPING downloads: {error}')
+        self.blocked = True
+
+        return None
 
 
-def make_cover(path):
-    im = Image.open(path).convert('RGB')
-    # crops to the cover format (covers the area, cuts the excess at the center)
+def title_key(name: str | None) -> str:
+    """Title without region/version/extension, article or punctuation: 'Some Game, The (USA).sfc' -> 'somegame'."""
+    title = EXTENSION_RE.sub('', (name or '').lower())
+    title = REGION_TAIL_RE.sub('', title).replace('pokémon', 'pokemon').replace('&', 'and').replace('_', ' ')
+    title = ARTICLE_RE.sub(' ', title)
+
+    return NON_ALPHANUMERIC_RE.sub('', title)
+
+
+def crop_to_cover_ratio(image: Image.Image) -> Image.Image:
+    """Covers the whole cover format, cutting the excess at the center."""
     target = COVER_W / COVER_H
-    w, h = im.size
-    if w / h > target:
-        nw = int(h * target); im = im.crop(((w - nw) // 2, 0, (w - nw) // 2 + nw, h))
+    width, height = image.size
+    if width / height > target:
+        new_width = int(height * target)
+        left = (width - new_width) // 2
+
+        return image.crop((left, 0, left + new_width, height))
+    new_height = int(width / target)
+    top = (height - new_height) // 2
+
+    return image.crop((0, top, width, top + new_height))
+
+
+def rgb565(red: int, green: int, blue: int) -> int:
+    return ((red >> 3) << 11) | ((green >> 2) << 5) | (blue >> 3)
+
+
+def make_cover(path: str) -> Cover:
+    image = crop_to_cover_ratio(Image.open(path).convert('RGB')).resize((COVER_W, COVER_H), Image.LANCZOS)
+    palette_image = image.quantize(COLORS, method=Image.Quantize.MEDIANCUT)
+    quantized = image.quantize(palette=palette_image, dither=Image.Dither.FLOYDSTEINBERG)
+    palette = quantized.getpalette()[:COLORS * 3] + [0] * (COLORS * 3)
+    palette565 = [rgb565(*palette[index * 3:index * 3 + 3]) for index in range(COLORS)]
+    pixels = quantized.tobytes()
+    packed = bytes((pixels[index] << 4) | pixels[index + 1] for index in range(0, len(pixels), 2))
+    data = COVER_MAGIC + struct.pack('<HH', COVER_W, COVER_H) + struct.pack(f'<{COLORS}H', *palette565) + packed
+
+    return data, quantized.convert('RGB')
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--collection', required=True, help='retro/ folder of a game collection in RetroStation format')
+    parser.add_argument('--rdb', default=None)
+    parser.add_argument('--preview', default=None, help='saves a sheet with all the generated covers')
+    parser.add_argument('--download', action='store_true',
+                        help='fetches from libretro-thumbnails the covers the collection lacks')
+    parser.add_argument('--fixes', default=os.path.join(ROOT, 'cache', 'cover-fixes.json'),
+                        help='optional JSON file of manual corrections (default cache/cover-fixes.json)')
+
+    return parser.parse_args()
+
+
+def game_file_path(game_file: Record) -> str:
+    return game_file.get('gameRelativePath') or game_file.get('gameRelativePathOrFolder') or ''
+
+
+def title_keys(game: Record) -> set[str]:
+    keys = {title_key(game.get('name', ''))}
+    for game_file in game.get('files', []):
+        keys.add(title_key(os.path.basename(game_file_path(game_file))))
+
+    return keys
+
+
+def load_collection(root: str) -> Collection:
+    with open(os.path.join(root, 'cache/games.json')) as file:
+        games = json.load(file)
+    collection = Collection(root)
+    for game in games:
+        for game_file in game.get('files', []):
+            collection.by_file.setdefault(os.path.basename(game_file_path(game_file)), []).append(game)
+    for game in games:
+        for system, prefixes in FOLDERS.items():
+            if not game['folder'].startswith(prefixes):
+                continue
+            for key in title_keys(game):
+                if key:
+                    collection.by_title.setdefault((system, key), []).append(game)
+
+    return collection
+
+
+def load_fixes(path: str) -> dict[str, Record]:
+    if not os.path.exists(path):
+        return {}
+    with open(path) as file:
+        return json.load(file)
+
+
+def pick_record(rom: str, system: str, collection: Collection) -> Record:
+    """Prefers the record from the system folder and with an image."""
+    prefixes = FOLDERS[system]
+    candidates = collection.by_file.get(rom, [])
+    if not any(record['folder'].startswith(prefixes) for record in candidates):
+        # copy renamed to the catalog name: look it up by title in the system folder
+        candidates = collection.by_title.get((system, title_key(rom)), [])
+
+    def preference(record: Record) -> tuple[bool, bool, bool]:
+        return record['folder'].startswith(prefixes), bool(record.get('image')), bool(record.get('description'))
+
+    return max(candidates, key=preference, default={})
+
+
+def resolve_year(fix: Record, details: Record, description: str) -> int | str:
+    year = fix.get('year', details.get('releaseyear'))
+    if year:
+        return year
+    found = YEAR_RE.search(description)
+
+    return int(found.group(1)) if found else ''
+
+
+def collection_image(record: Record, fix: Record, root: str) -> str:
+    relative = fix.get('image') or record.get('image')
+    if relative:
+        return os.path.join(root, 'assets/games', relative)
+    optimized_name = record.get('searchNameOptimized')
+    if not optimized_name:
+        return ''
+    # no image in the record: looks for <optimized name>[digits].webp/jpg in the system folder
+    image_dir = os.path.join(root, 'assets/games', record['folder'])
+    pattern = re.compile(re.escape(optimized_name) + r'\d*\.(webp|jpg|png)$')
+    names = os.listdir(image_dir) if os.path.isdir(image_dir) else []
+    matches = sorted(name for name in names if pattern.match(name))
+
+    return os.path.join(image_dir, matches[0]) if matches else ''
+
+
+def retire_cover(job: SystemJob, base: str) -> None:
+    """No rm: the wrong cover goes to trash/."""
+    old_cover = os.path.join(job.meta, base + '.cap')
+    if not os.path.exists(old_cover):
+        return
+    os.makedirs(os.path.join(ROOT, 'trash', 'covers'), exist_ok=True)
+    os.replace(old_cover, os.path.join(ROOT, 'trash', 'covers', job.name + '-' + base + '.cap'))
+
+
+def find_cover_image(image: str, fix: Record, catalog_name: str | None, base_db: str,
+                     downloader: CoverDownloader) -> str:
+    if fix.get('source') == 'libretro':
+        image = ''  # wrong collection cover: use the libretro one
+    if image and os.path.exists(image):
+        return image
+    if not catalog_name and not fix.get('cover_name'):
+        return ''
+
+    return downloader.fetch(base_db, fix.get('cover_name', catalog_name))
+
+
+def read_cover(image: str) -> Cover | None:
+    if not image or not os.path.exists(image):
+        return None
+    try:
+        return make_cover(image)
+    except Exception as error:
+        print(f'    unreadable image ({error}): {image}')
+
+        return None
+
+
+def report_rom(base: str, year: int | str, genre: str, size: int, description: str, catalog_name: str | None) -> None:
+    cover_note = f'cover {size} B' if size else 'NO COVER'
+    print(f'  {base[:40]:40} {year!s:5} {genre[:14]:14} {cover_note}'
+          f'{"" if description else "  NO DESCRIPTION"}{"" if catalog_name else "  (not in libretro database)"}')
+
+
+def process_rom(rom: str, job: SystemJob, collection: Collection, fixes: dict[str, Record],
+                downloader: CoverDownloader, totals: Totals) -> None:
+    base = os.path.splitext(rom)[0]
+    record = pick_record(rom, job.name, collection)
+    catalog_name, details = rdb_details(os.path.join(job.folder, rom), job.header, job.catalog)
+    fix = fixes.get(rom, {})
+    description = fix.get('description', (record.get('description') or '').strip())
+    year = resolve_year(fix, details, description)
+    genre = GENRES.get(details.get('genre', ''), details.get('genre', ''))
+    developer = details.get('developer', '') or details.get('publisher', '')
+    with open(os.path.join(job.meta, base + '.txt'), 'w', encoding='utf-8') as file:
+        file.write(f'{year}\n{genre}\n{developer}\n{" ".join(description.split())}\n')
+    image = collection_image(record, fix, collection.root)
+    if fix.get('no_cover'):
+        retire_cover(job, base)
+        cover = None
     else:
-        nh = int(w / target); im = im.crop((0, (h - nh) // 2, w, (h - nh) // 2 + nh))
-    im = im.resize((COVER_W, COVER_H), Image.LANCZOS)
-    pal = im.quantize(COLORS, method=Image.Quantize.MEDIANCUT)
-    q = im.quantize(palette=pal, dither=Image.Dither.FLOYDSTEINBERG)
-    p = q.getpalette()[:COLORS * 3] + [0] * (COLORS * 3)
-    pal565 = [((p[i * 3] >> 3) << 11) | ((p[i * 3 + 1] >> 2) << 5) | (p[i * 3 + 2] >> 3) for i in range(COLORS)]
-    px = q.tobytes()
-    pack = bytes((px[i] << 4) | px[i + 1] for i in range(0, len(px), 2))
-    data = b'CAP1' + struct.pack('<HH', COVER_W, COVER_H) + struct.pack('<16H', *pal565) + pack
-    return data, q.convert('RGB')
+        image = find_cover_image(image, fix, catalog_name, details.get('_base', job.bases[0]), downloader)
+        cover = read_cover(image)
+    size = 0
+    if cover:
+        data, preview = cover
+        with open(os.path.join(job.meta, base + '.cap'), 'wb') as file:
+            file.write(data)
+        size = len(data)
+        totals.cover_bytes += size
+        totals.previews.append(preview)
+    totals.games += 1
+    report_rom(base, year, genre, size, description, catalog_name)
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument('--collection', required=True, help='retro/ folder of a game collection in RetroStation format')
-    ap.add_argument('--rdb', default=None)
-    ap.add_argument('--preview', default=None, help='saves a sheet with all the generated covers')
-    ap.add_argument('--download', action='store_true', help='fetches from libretro-thumbnails the covers the collection lacks')
-    ap.add_argument('--fixes', default=os.path.join(ROOT, 'cache', 'cover-fixes.json'),
-                    help='optional JSON file of manual corrections (default cache/cover-fixes.json)')
-    a = ap.parse_args()
-    rdbdir = a.rdb or (glob.glob(os.path.expanduser(
-        '~/.local/share/flatpak/app/org.libretro.RetroArch/*/stable/active/files/share/libretro/database/rdb')) + [''])[0]
-    print(f'Collection: {a.collection}\nrdb: {rdbdir}')
-    games = json.load(open(os.path.join(a.collection, 'cache/games.json')))
-    by_file = {}  # file name -> all records with that name (some repeat across systems)
-    for g in games:
-        for f in g.get('files', []):
-            p = f.get('gameRelativePath') or f.get('gameRelativePathOrFolder') or ''
-            by_file.setdefault(os.path.basename(p), []).append(g)
-    by_title = {}  # (system, normalized title) -> collection records of that system
-    for g in games:
-        for sys_, pref in FOLDERS.items():
-            if g['folder'].startswith(pref):
-                names = {title_key(g.get('name', ''))}
-                for f in g.get('files', []):
-                    names.add(title_key(os.path.basename(f.get('gameRelativePath') or f.get('gameRelativePathOrFolder') or '')))
-                for k in names:
-                    if k: by_title.setdefault((sys_, k), []).append(g)
-    fixes = json.load(open(a.fixes)) if os.path.exists(a.fixes) else {}
-    previews, total, bytes_total = [], 0, 0
-    for system, (bases, header) in SYSTEMS.items():
-        folder = os.path.join(ROOT, 'roms', system)
-        roms = sorted(f for f in os.listdir(folder) if not f.startswith('.')) if os.path.isdir(folder) else []
-        if not roms:
-            continue
-        print(f'{system}: {len(roms)} games')
-        by_crc, by_name, by_base = load_rdb(rdbdir, bases) if rdbdir else ({}, {}, {})
-        meta = os.path.join(folder, '.meta')
-        os.makedirs(meta, exist_ok=True)
-        for rom in roms:
-            base = os.path.splitext(rom)[0]
-            # prefers the record from the system folder and with an image
-            candidates = by_file.get(rom, [])
-            if not any(x['folder'].startswith(FOLDERS[system]) for x in candidates):
-                # copy renamed to the catalog name: look it up by title in the system folder
-                candidates = by_title.get((system, title_key(rom)), [])
-            g = max(candidates, key=lambda x: (x['folder'].startswith(FOLDERS[system]), bool(x.get('image')),
-                                               bool(x.get('description'))), default={})
-            n, m = rdb_details(os.path.join(folder, rom), header, by_crc, by_name, by_base)
-            desc = (g.get('description') or '').strip()
-            c = fixes.get(rom, {})
-            desc = c.get('description', desc)
-            year = c.get('year', m.get('releaseyear'))
-            if not year:
-                r = re.search(r'\b(19[789]\d|20[0-2]\d)\b', desc)
-                year = int(r.group(1)) if r else ''
-            genre = GENRES.get(m.get('genre', ''), m.get('genre', ''))
-            dev = m.get('developer', '') or m.get('publisher', '')
-            with open(os.path.join(meta, base + '.txt'), 'w', encoding='utf-8') as f:
-                f.write(f'{year}\n{genre}\n{dev}\n{" ".join(desc.split())}\n')
-            img = os.path.join(a.collection, 'assets/games', c.get('image') or g.get('image', '')) \
-                if (c.get('image') or g.get('image')) else ''
-            if not img and g.get('searchNameOptimized'):
-                # no image in the record: looks for <optimized name>[digits].webp/jpg in the system folder
-                img_dir = os.path.join(a.collection, 'assets/games', g['folder'])
-                rx = re.compile(re.escape(g['searchNameOptimized']) + r'\d*\.(webp|jpg|png)$')
-                matches = sorted(f for f in (os.listdir(img_dir) if os.path.isdir(img_dir) else []) if rx.match(f))
-                img = os.path.join(img_dir, matches[0]) if matches else ''
-            size = 0
-            if c.get('no_cover'):
-                img = ''
-                old_cover = os.path.join(meta, base + '.cap')
-                if os.path.exists(old_cover):  # no rm: the wrong cover goes to trash/
-                    os.makedirs(os.path.join(ROOT, 'trash', 'covers'), exist_ok=True)
-                    os.replace(old_cover, os.path.join(ROOT, 'trash', 'covers', system + '-' + base + '.cap'))
-            if c.get('source') == 'libretro':
-                img = ''  # wrong collection cover: use the libretro one
-            if (not img or not os.path.exists(img)) and not c.get('no_cover') and (n or c.get('cover_name')):
-                img = download_cover(m.get('_base', bases[0]), c.get('cover_name', n), network=a.download)  # without --download, cache only
-            if img and os.path.exists(img):
-                try:
-                    data, preview = make_cover(img)
-                except Exception as e:
-                    print(f'    unreadable image ({e}): {img}')
-                    img = ''
-            if img and os.path.exists(img):
-                open(os.path.join(meta, base + '.cap'), 'wb').write(data)
-                size = len(data); bytes_total += size; previews.append(preview)
-            total += 1
-            print(f'  {base[:40]:40} {year!s:5} {genre[:14]:14} {"cover %d B" % size if size else "NO COVER"}'
-                  f'{"" if desc else "  NO DESCRIPTION"}{"" if n else "  (not in libretro database)"}')
-    print(f'{total} game details, {len(previews)} covers, {bytes_total} cover bytes in total')
-    if a.preview and previews:
-        W = Image.new('RGB', (len(previews) * (COVER_W + 4), COVER_H), 'white')
-        for i, p in enumerate(previews):
-            W.paste(p, (i * (COVER_W + 4), 0))
-        W.resize((W.width * 2, W.height * 2), Image.NEAREST).save(a.preview)
+def process_system(system: str, rdb_folder: str, collection: Collection, fixes: dict[str, Record],
+                   downloader: CoverDownloader, totals: Totals) -> None:
+    bases, header = SYSTEMS[system]
+    folder = os.path.join(ROOT, 'roms', system)
+    entries = os.listdir(folder) if os.path.isdir(folder) else []
+    roms = sorted(entry for entry in entries if not entry.startswith('.'))
+    if not roms:
+        return
+    print(f'{system}: {len(roms)} games')
+    catalog = load_rdb(rdb_folder, bases) if rdb_folder else RdbCatalog()
+    meta = os.path.join(folder, '.meta')
+    os.makedirs(meta, exist_ok=True)
+    job = SystemJob(system, bases, header, folder, meta, catalog)
+    for rom in roms:
+        process_rom(rom, job, collection, fixes, downloader, totals)
+
+
+def save_preview_sheet(previews: list[Image.Image], path: str) -> None:
+    sheet = Image.new('RGB', (len(previews) * (COVER_W + PREVIEW_GAP), COVER_H), 'white')
+    for index, preview in enumerate(previews):
+        sheet.paste(preview, (index * (COVER_W + PREVIEW_GAP), 0))
+    sheet.resize((sheet.width * PREVIEW_SCALE, sheet.height * PREVIEW_SCALE), Image.NEAREST).save(path)
+
+
+def main() -> None:
+    args = parse_args()
+    rdb_folder = args.rdb or (glob.glob(os.path.expanduser(DEFAULT_RDB_GLOB)) + [''])[0]
+    print(f'Collection: {args.collection}\nrdb: {rdb_folder}')
+    collection = load_collection(args.collection)
+    fixes = load_fixes(args.fixes)
+    downloader = CoverDownloader(args.download)
+    totals = Totals()
+    for system in SYSTEMS:
+        process_system(system, rdb_folder, collection, fixes, downloader, totals)
+    print(f'{totals.games} game details, {len(totals.previews)} covers, {totals.cover_bytes} cover bytes in total')
+    if args.preview and totals.previews:
+        save_preview_sheet(totals.previews, args.preview)
 
 
 if __name__ == '__main__':

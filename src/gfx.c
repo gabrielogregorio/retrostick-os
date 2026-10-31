@@ -1,142 +1,282 @@
 /* Software drawing on a 0x00RRGGBB buffer. No dependencies at all. */
 #include "gfx.h"
 
-static uint32_t *P;
-static int W, H, CY0, CY1; /* CY0..CY1: band of rows where drawing is allowed (clipping) */
+#define OPAQUE 255
+#define RED_BLUE_MASK 0xff00ff
+#define GREEN_MASK 0x00ff00
 
-void gfx_target(uint32_t *px, int w, int h) { P = px; W = w; H = h; CY0 = 0; CY1 = h; }
-void gfx_clip_y(int y0, int y1) { CY0 = y0 < 0 ? 0 : y0; CY1 = y1 > H ? H : y1; }
+#define FIRST_GLYPH 32
+#define LAST_GLYPH 255
+#define UNKNOWN_CHAR '?'
+#define UTF8_TWO_BYTE_LEAD 0xc0
+#define UTF8_THREE_BYTE_LEAD 0xe0
+#define UTF8_CONTINUATION 0x80
+#define UTF8_CONTINUATION_MASK 0xc0
 
-uint32_t gfx_blend(uint32_t a, uint32_t b, int t)
+#define STAR_VERTICES 10
+#define STAR_FIRST_ANGLE (-1.5707963f) /* point up */
+#define STAR_ANGLE_STEP 0.62831853f
+#define STAR_INNER_RATIO 0.46f
+#define STAR_SAMPLES_PER_AXIS 3
+#define STAR_SAMPLES_PER_PIXEL 9
+
+static struct {
+    uint32_t *pixels;
+    int width, height;
+    int clip_top, clip_bottom; /* band of rows where drawing is allowed */
+} canvas;
+
+void gfx_target(uint32_t *px, int w, int h)
 {
-    uint32_t rb = ((a & 0xff00ff) * (255 - t) + (b & 0xff00ff) * t) >> 8;
-    uint32_t g = ((a & 0x00ff00) * (255 - t) + (b & 0x00ff00) * t) >> 8;
-    return (rb & 0xff00ff) | (g & 0x00ff00);
+    canvas.pixels = px;
+    canvas.width = w;
+    canvas.height = h;
+    canvas.clip_top = 0;
+    canvas.clip_bottom = h;
+}
+
+void gfx_clip_y(int y0, int y1)
+{
+    canvas.clip_top = y0 < 0 ? 0 : y0;
+    canvas.clip_bottom = y1 > canvas.height ? canvas.height : y1;
+}
+
+uint32_t gfx_blend(uint32_t from, uint32_t to, int weight)
+{
+    uint32_t red_blue = ((from & RED_BLUE_MASK) * (OPAQUE - weight) + (to & RED_BLUE_MASK) * weight) >> 8;
+    uint32_t green = ((from & GREEN_MASK) * (OPAQUE - weight) + (to & GREEN_MASK) * weight) >> 8;
+
+    return (red_blue & RED_BLUE_MASK) | (green & GREEN_MASK);
 }
 
 static inline void plot(int x, int y, uint32_t color, int alpha)
 {
-    if ((unsigned)x >= (unsigned)W || y < CY0 || y >= CY1) return;
-    uint32_t *d = &P[y * W + x];
-    *d = alpha >= 255 ? color : gfx_blend(*d, color, alpha);
+    if ((unsigned)x >= (unsigned)canvas.width || y < canvas.clip_top || y >= canvas.clip_bottom) {
+        return;
+    }
+    uint32_t *pixel = &canvas.pixels[y * canvas.width + x];
+    *pixel = alpha >= OPAQUE ? color : gfx_blend(*pixel, color, alpha);
 }
 
 void gfx_gradient_v(uint32_t top, uint32_t bottom)
 {
-    for (int y = 0; y < H; y++) {
-        uint32_t c = gfx_blend(top, bottom, y * 255 / (H - 1));
-        uint32_t *l = &P[y * W];
-        for (int x = 0; x < W; x++) l[x] = c;
+    for (int y = 0; y < canvas.height; y += 1) {
+        uint32_t color = gfx_blend(top, bottom, y * OPAQUE / (canvas.height - 1));
+        uint32_t *row = &canvas.pixels[y * canvas.width];
+        for (int x = 0; x < canvas.width; x += 1) {
+            row[x] = color;
+        }
     }
 }
 
 void gfx_rect(int x, int y, int w, int h, uint32_t color, int alpha)
 {
-    int x0 = x < 0 ? 0 : x, y0 = y < 0 ? 0 : y;
-    int x1 = x + w > W ? W : x + w, y1 = y + h > H ? H : y + h;
-    for (int j = y0; j < y1; j++)
-        for (int i = x0; i < x1; i++) plot(i, j, color, alpha);
-}
-
-void gfx_round_rect(int x, int y, int w, int h, int r, uint32_t color, int alpha)
-{
-    gfx_round_rect_grad(x, y, w, h, r, color, color, alpha);
-}
-
-static inline void hline(uint32_t *d, int n, uint32_t color, int alpha)
-{
-    if (alpha >= 255) { while (n-- > 0) *d++ = color; return; }
-    uint32_t crb = (color & 0xff00ff) * alpha, cg = (color & 0x00ff00) * alpha;
-    int inv = 255 - alpha;
-    while (n-- > 0) {
-        uint32_t v = *d;
-        *d++ = ((((v & 0xff00ff) * inv + crb) >> 8) & 0xff00ff) | ((((v & 0x00ff00) * inv + cg) >> 8) & 0x00ff00);
+    int left = x < 0 ? 0 : x;
+    int top = y < 0 ? 0 : y;
+    int right = x + w > canvas.width ? canvas.width : x + w;
+    int bottom = y + h > canvas.height ? canvas.height : y + h;
+    for (int row = top; row < bottom; row += 1) {
+        for (int column = left; column < right; column += 1) {
+            plot(column, row, color, alpha);
+        }
     }
 }
 
-void gfx_round_rect_grad(int x, int y, int w, int h, int r, uint32_t top, uint32_t bottom, int alpha)
+void gfx_round_rect(int x, int y, int w, int h, int radius, uint32_t color, int alpha)
 {
-    if (alpha <= 0) return;
-    for (int j = 0; j < h; j++) {
-        int yy = y + j;
-        if (yy < CY0 || yy >= CY1) continue;
-        uint32_t color = h > 1 ? gfx_blend(top, bottom, j * 255 / (h - 1)) : top;
-        int dy = j < r ? r - j : (j >= h - r ? j - (h - r - 1) : 0);
-        int m0 = 0, m1 = w; /* middle span without corners */
+    gfx_round_rect_grad(x, y, w, h, radius, color, color, alpha);
+}
+
+static inline void hline(uint32_t *dst, int count, uint32_t color, int alpha)
+{
+    if (alpha >= OPAQUE) {
+        for (int index = 0; index < count; index += 1) {
+            dst[index] = color;
+        }
+
+        return;
+    }
+    uint32_t color_red_blue = (color & RED_BLUE_MASK) * alpha;
+    uint32_t color_green = (color & GREEN_MASK) * alpha;
+    int inverse = OPAQUE - alpha;
+    for (int index = 0; index < count; index += 1) {
+        uint32_t value = dst[index];
+        uint32_t red_blue = ((value & RED_BLUE_MASK) * inverse + color_red_blue) >> 8;
+        uint32_t green = ((value & GREEN_MASK) * inverse + color_green) >> 8;
+        dst[index] = (red_blue & RED_BLUE_MASK) | (green & GREEN_MASK);
+    }
+}
+
+/* How many rows row sits inside the top or bottom corner band: 0 on the straight middle. */
+static inline int corner_depth(int row, int h, int radius)
+{
+    if (row < radius) {
+        return radius - row;
+    }
+    if (row >= h - radius) {
+        return row - (h - radius - 1);
+    }
+
+    return 0;
+}
+
+static inline void draw_corner_pixels(int x, int y, int w, int radius, int dy, uint32_t color, int alpha)
+{
+    int radius_squared = radius * radius;
+    for (int column = 0; column < radius; column += 1) {
+        int dx = radius - column;
+        int distance_squared = dx * dx + dy * dy;
+        int edge_alpha = alpha;
+        if (distance_squared > radius_squared + radius) {
+            continue;
+        }
+        if (distance_squared > radius_squared - radius) {
+            edge_alpha = alpha * (radius_squared + radius - distance_squared) / (2 * radius);
+        }
+        plot(x + column, y, color, edge_alpha);
+        plot(x + w - 1 - column, y, color, edge_alpha);
+    }
+}
+
+void gfx_round_rect_grad(int x, int y, int w, int h, int radius, uint32_t top, uint32_t bottom, int alpha)
+{
+    if (alpha <= 0) {
+        return;
+    }
+    for (int row = 0; row < h; row += 1) {
+        int screen_y = y + row;
+        if (screen_y < canvas.clip_top || screen_y >= canvas.clip_bottom) {
+            continue;
+        }
+        uint32_t color = h > 1 ? gfx_blend(top, bottom, row * OPAQUE / (h - 1)) : top;
+        int dy = corner_depth(row, h, radius);
+        int span_start = 0;
+        int span_end = w;
         if (dy) {
-            m0 = r; m1 = w - r;
-            for (int i = 0; i < r; i++) {
-                int dx = r - i, d2 = dx * dx + dy * dy, r2 = r * r, a = alpha;
-                if (d2 > r2 + r) continue;
-                if (d2 > r2 - r) a = alpha * (r2 + r - d2) / (2 * r);
-                plot(x + i, yy, color, a);
-                plot(x + w - 1 - i, yy, color, a);
+            span_start = radius;
+            span_end = w - radius;
+            draw_corner_pixels(x, screen_y, w, radius, dy, color, alpha);
+        }
+        int left = x + span_start;
+        int right = x + span_end;
+        if (left < 0) {
+            left = 0;
+        }
+        if (right > canvas.width) {
+            right = canvas.width;
+        }
+        if (right > left) {
+            hline(&canvas.pixels[screen_y * canvas.width + left], right - left, color, alpha);
+        }
+    }
+}
+
+/* UTF-8 to Latin-1: whatever does not fit becomes UNKNOWN_CHAR. */
+static int next_char(const char **text)
+{
+    const unsigned char *cursor = (const unsigned char *)*text;
+    int code = *cursor;
+    cursor += 1;
+    if (code >= UTF8_TWO_BYTE_LEAD && code < UTF8_THREE_BYTE_LEAD &&
+        (*cursor & UTF8_CONTINUATION_MASK) == UTF8_CONTINUATION) {
+        code = ((code & 0x1f) << 6) | (*cursor & 0x3f);
+        cursor += 1;
+    } else if (code >= UTF8_THREE_BYTE_LEAD) {
+        while ((*cursor & UTF8_CONTINUATION_MASK) == UTF8_CONTINUATION) {
+            cursor += 1;
+        }
+        code = UNKNOWN_CHAR;
+    }
+    *text = (const char *)cursor;
+
+    return (code < FIRST_GLYPH || code > LAST_GLYPH) ? UNKNOWN_CHAR : code;
+}
+
+int gfx_width(const font_t *font, const char *utf8)
+{
+    int width = 0;
+    while (*utf8) {
+        width += font->g[next_char(&utf8) - FIRST_GLYPH].adv;
+    }
+
+    return width;
+}
+
+static inline void draw_glyph(const font_t *font, const glyph_t *glyph, int x, int y, uint32_t color, int alpha)
+{
+    const uint8_t *coverage = font->a + glyph->off;
+    for (int row = 0; row < glyph->h; row += 1) {
+        for (int column = 0; column < glyph->w; column += 1) {
+            int value = coverage[row * glyph->w + column];
+            if (value) {
+                plot(x + glyph->x + column, y + glyph->y + row, color, value * alpha / OPAQUE);
             }
         }
-        int x0 = x + m0, x1 = x + m1;
-        if (x0 < 0) x0 = 0;
-        if (x1 > W) x1 = W;
-        if (x1 > x0) hline(&P[yy * W + x0], x1 - x0, color, alpha);
     }
-}
-
-/* UTF-8 -> Latin-1 (whatever does not fit becomes '?') */
-static int next_char(const char **s)
-{
-    const unsigned char *p = (const unsigned char *)*s;
-    int c = *p++;
-    if (c >= 0xc0 && c < 0xe0 && (*p & 0xc0) == 0x80) c = ((c & 0x1f) << 6) | (*p++ & 0x3f);
-    else if (c >= 0xe0) { while ((*p & 0xc0) == 0x80) p++; c = '?'; }
-    *s = (const char *)p;
-    return (c < 32 || c > 255) ? '?' : c;
-}
-
-int gfx_width(const font_t *f, const char *s)
-{
-    int w = 0;
-    while (*s) w += f->g[next_char(&s) - 32].adv;
-    return w;
 }
 
 /* y is the text baseline */
-int gfx_text(const font_t *f, int x, int y, const char *s, uint32_t color, int alpha)
+int gfx_text(const font_t *font, int x, int y, const char *utf8, uint32_t color, int alpha)
 {
-    y -= f->ascent;
-    while (*s) {
-        const glyph_t *g = &f->g[next_char(&s) - 32];
-        const uint8_t *a = f->a + g->off;
-        for (int j = 0; j < g->h; j++)
-            for (int i = 0; i < g->w; i++) {
-                int v = a[j * g->w + i];
-                if (v) plot(x + g->x + i, y + g->y + j, color, v * alpha / 255);
-            }
-        x += g->adv;
+    int top = y - font->ascent;
+    while (*utf8) {
+        const glyph_t *glyph = &font->g[next_char(&utf8) - FIRST_GLYPH];
+        draw_glyph(font, glyph, x, top, color, alpha);
+        x += glyph->adv;
     }
+
     return x;
 }
 
-/* 5-pointed star (point up), edge smoothed with 3x3 samples, top-to-bottom gradient */
-static int inside_star(float x, float y, const float *vx, const float *vy)
+static int inside_star(float x, float y, const float *vertex_x, const float *vertex_y)
 {
-    int c = 0;
-    for (int i = 0, j = 9; i < 10; j = i++)
-        if (((vy[i] > y) != (vy[j] > y)) && (x < (vx[j] - vx[i]) * (y - vy[i]) / (vy[j] - vy[i]) + vx[i])) c = !c;
-    return c;
+    int inside = 0;
+    int previous = STAR_VERTICES - 1;
+    for (int vertex = 0; vertex < STAR_VERTICES; vertex += 1) {
+        float rise = vertex_y[previous] - vertex_y[vertex];
+        float run = vertex_x[previous] - vertex_x[vertex];
+        if (((vertex_y[vertex] > y) != (vertex_y[previous] > y)) &&
+            (x < run * (y - vertex_y[vertex]) / rise + vertex_x[vertex])) {
+            inside = !inside;
+        }
+        previous = vertex;
+    }
+
+    return inside;
 }
 
+static int star_coverage(int x, int y, const float *vertex_x, const float *vertex_y)
+{
+    int covered = 0;
+    for (int sample_y = 0; sample_y < STAR_SAMPLES_PER_AXIS; sample_y += 1) {
+        for (int sample_x = 0; sample_x < STAR_SAMPLES_PER_AXIS; sample_x += 1) {
+            float offset_x = (sample_x + 0.5f) / STAR_SAMPLES_PER_AXIS;
+            float offset_y = (sample_y + 0.5f) / STAR_SAMPLES_PER_AXIS;
+            covered += inside_star(x + offset_x, y + offset_y, vertex_x, vertex_y);
+        }
+    }
+
+    return covered;
+}
+
+/* 5-pointed star, edge smoothed with 3x3 samples, top-to-bottom gradient. */
 void gfx_star(int cx, int cy, int radius, uint32_t top, uint32_t bottom, int alpha)
 {
-    float vx[10], vy[10];
-    for (int i = 0; i < 10; i++) {
-        float a = -1.5707963f + i * 0.62831853f, r = (i & 1) ? radius * 0.46f : radius;
-        vx[i] = cx + r * __builtin_cosf(a);
-        vy[i] = cy + r * __builtin_sinf(a);
+    float vertex_x[STAR_VERTICES];
+    float vertex_y[STAR_VERTICES];
+    for (int vertex = 0; vertex < STAR_VERTICES; vertex += 1) {
+        float angle = STAR_FIRST_ANGLE + vertex * STAR_ANGLE_STEP;
+        float length = (vertex & 1) ? radius * STAR_INNER_RATIO : radius;
+        vertex_x[vertex] = cx + length * __builtin_cosf(angle);
+        vertex_y[vertex] = cy + length * __builtin_sinf(angle);
     }
-    for (int y = cy - radius; y <= cy + radius; y++)
-        for (int x = cx - radius; x <= cx + radius; x++) {
-            int n = 0;
-            for (int sy = 0; sy < 3; sy++)
-                for (int sx = 0; sx < 3; sx++) n += inside_star(x + (sx + 0.5f) / 3, y + (sy + 0.5f) / 3, vx, vy);
-            if (n) plot(x, y, gfx_blend(top, bottom, (y - cy + radius) * 255 / (2 * radius + 1)), alpha * n / 9);
+    for (int y = cy - radius; y <= cy + radius; y += 1) {
+        for (int x = cx - radius; x <= cx + radius; x += 1) {
+            int covered = star_coverage(x, y, vertex_x, vertex_y);
+            if (covered) {
+                uint32_t color = gfx_blend(top, bottom, (y - cy + radius) * OPAQUE / (2 * radius + 1));
+                plot(x, y, color, alpha * covered / STAR_SAMPLES_PER_PIXEL);
+            }
         }
+    }
 }
