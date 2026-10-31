@@ -48,7 +48,7 @@ def walk(c, path):
             print(f'{p}/\tDIR\t{coff(cl)}'); walk(cl, p)
         else:
             ch = chain(cl) if cl else []
-            frag = 1 + sum(1 for a, b in zip(ch, ch[1:]) if b != a + 1)
+            frag = 1 + sum(1 for a, b in zip(ch, ch[1:], strict=False) if b != a + 1)
             start = coff(ch[0]) if ch else 0; end = max(coff(x) for x in ch) + cs if ch else 0
             print(f'{p}\t{fsz}\t{start}\t{end}\t{frag}')
 print(f'# cs={cs} data0={data0} root={rootc} imgsize_partial={size}', file=sys.stderr)

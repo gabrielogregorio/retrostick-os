@@ -7,7 +7,6 @@ Read-only.
 """
 import sys
 from elftools.elf.elffile import ELFFile
-from elftools.elf.relocation import RelocationSection
 from capstone import Cs, CS_ARCH_ARM, CS_MODE_ARM, CS_MODE_THUMB
 
 path = sys.argv[1]

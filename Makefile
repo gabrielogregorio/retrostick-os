@@ -1,9 +1,13 @@
 # make pc    -> out/menu-pc (window on the PC)
 # make arm   -> out/menu-arm (static binary for the stick: ARMv6 + VFP, musl)
 # make run   -> opens the preview on the PC
-# make test  -> runs the ARM binary under qemu-arm, headless, and saves out/stick-shot.png
-CROSS := toolchain/arm-linux-musleabi-cross/bin/arm-linux-musleabi-
+# make smoke-arm -> runs the ARM menu under qemu-arm, headless, and saves out/stick-shot.png
+# make test  -> unit and e2e tests (no emulator core, no ROM, no window)
+# make demo  -> records docs/demo.gif from the menu on mock games
+CROSS ?= toolchain/arm-linux-musleabi-cross/bin/arm-linux-musleabi-
 SRC := src/main.c src/gfx.c src/aero.c src/icons.c src/music.c src/plat_exec.c
+FONT := src/font_data.h
+PY ?= python3
 CFLAGS := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
 
 all: pc arm
@@ -94,12 +98,12 @@ arm: out/menu-arm out/nes-arm $(SYSTEMS:%=out/%-arm)
 run: pc
 	./out/menu-pc
 
-test: arm
+smoke-arm: out/menu-arm
 	STICK_ROMS=roms STICK_SERIAL=/dev/null STICK_KEYS=R,D,D,A STICK_SHOT=out/stick-shot.ppm \
 		qemu-arm-static ./out/menu-arm
 	python3 -c "from PIL import Image; Image.open('out/stick-shot.ppm').save('out/stick-shot.png')"
 
-.PHONY: all pc arm run test
+.PHONY: all pc arm run smoke-arm
 
 # make card -> out/card/retro ready to copy to the root of the SD card (FAT32 with a partition)
 # menu music, effects and background: computed on the PC, the stick only reads them (tools/gen_audio.c)
@@ -116,3 +120,46 @@ card: arm audio
 	@echo "copy out/card/retro to the root of the SD card"
 
 .PHONY: card audio
+
+# ---------- tests: no emulator core, no ROM, no window ----------
+TESTF := -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fsanitize=address,undefined -Isrc
+TEST_MENU := src/gfx.c src/aero.c src/icons.c src/music.c tests/unit/plat_mock.c
+TEST_BINS := out/test/test_gfx out/test/test_menu out/test/test_serial out/test/test_audio
+
+out/test/test_gfx: tests/unit/test_gfx.c src/gfx.c src/*.h $(FONT)
+	@mkdir -p out/test
+	cc $(TESTF) tests/unit/test_gfx.c src/gfx.c -o $@ -lm
+out/test/test_menu: tests/unit/test_menu.c tests/unit/plat_mock.c src/*.c src/*.h $(FONT)
+	@mkdir -p out/test
+	cc $(TESTF) tests/unit/test_menu.c $(TEST_MENU) -o $@ -lm
+# the display structs hold 32-bit pointers on the stick: their size checks only apply to the ARM build
+out/test/test_serial: tests/unit/test_serial.c src/plat_stick.c src/*.h
+	@mkdir -p out/test
+	cc $(TESTF) '-D_Static_assert(a,b)=' tests/unit/test_serial.c -o $@ -lm
+out/test/test_audio: tests/unit/test_audio.c src/chip.c src/music.c src/*.h
+	@mkdir -p out/test
+	cc $(TESTF) tests/unit/test_audio.c src/chip.c src/music.c -o $@ -lm
+
+SDLC = $$(sdl2-config --cflags)
+SDLL = $$(sdl2-config --libs)
+out/test/menu-sdl: $(SRC) src/plat_sdl.c src/*.h $(FONT)
+	@mkdir -p out/test
+	cc $(CFLAGS) $(SRC) src/plat_sdl.c -o $@ $(SDLC) $(SDLL) -lm
+out/test/nes-pc: src/runner.c src/pause.c src/gfx.c src/plat_sdl.c tests/mock/mock_core.c tests/mock/libretro.h src/*.h $(FONT)
+	@mkdir -p out/test
+	cc $(CFLAGS) -Itests/mock src/runner.c src/pause.c src/gfx.c src/plat_sdl.c tests/mock/mock_core.c -o $@ $(SDLC) $(SDLL) -lm
+
+test-unit: $(TEST_BINS)
+	@set -e; for t in $(TEST_BINS); do ./$$t; done
+test-bins: out/test/menu-sdl out/test/nes-pc
+test-e2e: test-bins
+	$(PY) -m pytest tests/e2e
+test-python:
+	$(PY) -m pytest tests/python
+test: test-unit test-python test-e2e
+
+# README demo: mock games, no real title or artwork
+demo: out/test/menu-sdl
+	tools/make_demo_gif.sh
+
+.PHONY: test test-unit test-bins test-e2e test-python demo
