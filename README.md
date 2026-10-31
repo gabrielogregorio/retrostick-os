@@ -26,6 +26,25 @@ It runs **entirely from the SD card** and writes nothing to the device's SPI fla
 
 It provides an Aero-themed menu with glass, bubbles and 8-bit music, a game list with cover, year, genre and description, favorites, a controller diagnostics screen, and a pause menu with save states.
 
+## Is this your stick?
+
+RetroStick OS targets one specific board, and sticks sold under similar names use other chips. Check the system and the hardware below before you start.
+
+| | Compatible stick |
+|---|---|
+| Product | **Game Stick 4K Ultra HD**, HDMI stick with 2 wireless controllers and a USB receiver (the LITE version and other boards are not the target) |
+| Factory system | Own **"10 in 1"** menu on Linux 2.6.32, loaded from the SPI flash, no Android and no EmuELEC |
+| SoC | **GeneralPlus GPL32900B**, ARM1176 (ARMv6 + VFP); the marking on the chip may be scratched or re-marked |
+| Memory | 64 MB RAM, 8 MB SPI flash (XMC XM25QH64A) |
+| Video | HDMI, logical panel 720x480 at 59.94 Hz, even when the box says 4K |
+| Card | SD with MBR and one FAT32 partition; exFAT does not mount |
+
+**Does not apply:** sticks with Hi3798 or Rockchip chips, or any system based on Android, EmuELEC, GStickOS or similar. Their images do not boot here, and this project does not boot there.
+
+**Safe check, no opening and no flashing:** prepare a card as described in [Preparing the card](#preparing-the-card) and boot the stick with it. On a compatible stick the menu comes up, and `retro/log-steps.txt` appears on the card. Without the card, the stick returns to its factory menu. If nothing changes and that file is not created, the board is a different one.
+
+**Sure check:** with the stick open, read the SPI flash in read-only mode (`tools/re/read_spi.sh`). A compatible dump contains the strings `GPCV2149 SPI 1st bootloader` and `GPL329xxB linux bootloader`. See [docs/HARDWARE.md](docs/HARDWARE.md).
+
 ## Requirements
 
 **Hardware**
