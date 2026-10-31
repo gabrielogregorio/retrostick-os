@@ -9,32 +9,51 @@
 #include <unistd.h>
 #include "plat.h"
 
-void plat_reactivate(void);
+#define EXIT_CODE_LAUNCH_VIA_INIT 10
+#define EXIT_CODE_EXEC_FAILED 127
+
+/* on the stick the game NEVER runs inside the menu (the menu would stay in memory and the game would be slow) */
+static int launch_via_init(const char *prog, const char *game, const char *saves)
+{
+    char path[600];
+    snprintf(path, sizeof path, "%s/../launch.txt", plat_roms_dir());
+    FILE *file = fopen(path, "w");
+    if (file) {
+        fprintf(file, "%s\n%s\n%s\n", prog, game, saves);
+        if (fclose(file) == 0) {
+            plat_shutdown();
+            exit(EXIT_CODE_LAUNCH_VIA_INIT);
+        }
+    }
+    plat_log("menu: could not write launch.txt, error %d", errno);
+
+    return -1;
+}
+
+static int run_and_wait(const char *prog, const char *game, const char *saves)
+{
+    pid_t child = fork();
+    if (child < 0) {
+        return -1;
+    }
+    if (!child) {
+        execl(prog, prog, game, saves, (char *)0);
+        perror(prog);
+        _exit(EXIT_CODE_EXEC_FAILED);
+    }
+    int status = 0;
+    waitpid(child, &status, 0);
+    plat_reactivate();
+
+    return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+}
 
 int plat_launch(const char *prog, const char *game, const char *saves)
 {
     fflush(NULL); /* the menu log reaches the file before the game log */
     if (getenv("STICK_GAME_VIA_INIT")) {
-        char path[600];
-        snprintf(path, sizeof path, "%s/../launch.txt", plat_roms_dir());
-        FILE *f = fopen(path, "w");
-        if (f) {
-            fprintf(f, "%s\n%s\n%s\n", prog, game, saves);
-            if (fclose(f) == 0) { plat_shutdown(); exit(10); }
-        }
-        /* on the stick the game NEVER runs inside the menu (the menu would stay in memory and the game would be slow) */
-        plat_log("menu: could not write launch.txt, error %d", errno);
-        return -1;
+        return launch_via_init(prog, game, saves);
     }
-    pid_t p = fork();
-    if (p < 0) return -1;
-    if (!p) {
-        execl(prog, prog, game, saves, (char *)0);
-        perror(prog);
-        _exit(127);
-    }
-    int st = 0;
-    waitpid(p, &st, 0);
-    plat_reactivate();
-    return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+
+    return run_and_wait(prog, game, saves);
 }
