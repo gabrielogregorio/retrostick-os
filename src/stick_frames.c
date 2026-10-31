@@ -134,7 +134,7 @@ static void draw_game_integer(const uint16_t *px, int w, int h, int pitch_px, in
             expand_line_4x(src, line, w);
         }
         for (int repeat = 0; repeat < scale; repeat += 1) {
-            memcpy(base + (dy + y * scale + repeat) * panel_w + dx, line, w * scale * BYTES_PER_PIXEL);
+            memcpy(base + (dy + y * scale + repeat) * panel_w + dx, line, (size_t)w * scale * BYTES_PER_PIXEL);
         }
     }
 }

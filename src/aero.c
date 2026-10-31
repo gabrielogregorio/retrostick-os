@@ -265,8 +265,9 @@ static void build_bubble(bubble_sprite_t *sprite, int radius)
 {
     sprite->r = radius;
     sprite->size = radius * 2 + 1;
-    sprite->color = malloc(sprite->size * sprite->size * sizeof(uint32_t));
-    sprite->alpha = malloc(sprite->size * sprite->size);
+    size_t pixel_count = (size_t)sprite->size * (size_t)sprite->size;
+    sprite->color = malloc(pixel_count * sizeof(uint32_t));
+    sprite->alpha = malloc(pixel_count);
     for (int y = 0; y < sprite->size; y += 1) {
         for (int x = 0; x < sprite->size; x += 1) {
             float fx = (x - radius) / (float)radius;
