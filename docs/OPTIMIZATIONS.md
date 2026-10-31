@@ -55,7 +55,7 @@ Cores build with `-O3 -fomit-frame-pointer -fno-strict-aliasing` and `-mcpu=arm1
 The runner skips at most 2 frames in a row, when the clock falls more than 2 ms behind or the audio queue drops below a quarter of its target. snes9x2002, gpsp and picodrive use libretro's `frameskip=auto`: the runner reports the queue through `SET_AUDIO_BUFFER_STATUS_CALLBACK` and the core stops drawing when it runs low. Principle: a dropped frame is less noticeable than broken audio.
 
 **Lower the audio load when a core allows it.**
-Core options live in the options table in `runner.c`, for example `fceumm_sndrate_hint=32KHz`.
+Core options live in the options table in `src/runner.c`, for example `fceumm_sndrate_hint=32KHz`.
 
 ## Memory
 
@@ -67,7 +67,7 @@ gpsp is built with `ROM_BUFFER_SIZE=8` and `SMALL_TRANSLATION_CACHE`. When a cor
 
 ## Tuning knobs
 
-- Choppy audio: raise `QUEUE_TARGET` in `runner.c` or the fragments in `plat_audio_init`.
+- Choppy audio: raise `QUEUE_TARGET` in `runner_audio.c` or the fragments in `plat_audio_init`.
 - Audio lagging behind the picture: lower them.
 - `STICK_VSYNC=0` turns off the retrace wait, for comparison.
 - `STICK_CLOCK_TEST=1` logs the real duration of `usleep` and of 120 swaps with retrace wait.

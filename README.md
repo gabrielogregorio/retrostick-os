@@ -263,16 +263,24 @@ Copy each `.meta/` folder along with the games: `retro/roms/<system>/.meta/`.
 ## Project layout
 
 ```
-src/main.c          menu: carousel, game list, favorites, diagnostics, launching
+src/main.c          menu process: startup, input loop, launching
+src/catalog.c       systems, game scan, favorites, menu state
+src/details.c       game details and covers
+src/menu_view.c     menu drawing
+src/menu_audio.c    music and effects playback
 src/aero.c          Aero theme: sky, bubbles, glass
 src/icons.c         glass bubbles with the console drawn inside
 src/gfx.c           software drawing: rectangles, gradients, text with alpha
 src/music.c         synthesized music and effects (PC only)
 src/chip.c          8-bit synthesizer (PC only)
-src/runner.c        game runner: statically linked libretro core, audio, saves
-src/pause.c         pause menu
+src/runner.c        game process: libretro core, main loop
+src/runner_audio.c  resampling, rate control, fade-in
+src/runner_saves.c  SRAM and save states
+src/runner_pause.c  pause menu logic
+src/pause.c         pause menu drawing
 src/plat.h          platform layer: the menu and the runner talk only to it
-src/plat_stick.c    stick platform: /dev/disp0, /dev/ttyS1, /dev/dsp
+src/plat_stick.c    stick platform: init, log, clock
+src/stick_*.c       stick video, game frames, controllers, audio
 src/plat_sdl.c      PC platform: SDL2
 src/plat_exec.c     launches a game
 src/font_data.h     generated at build time, not in the repo
@@ -280,6 +288,7 @@ card-base/retro/    boot script for the card
 cores/              build recipes; core sources are fetched here, not in the repo
 roms/               your games, not in the repo
 tools/              covers, font and audio generators, log analysis, re/
+tests/              unit, Python and e2e tests, mock core and mock games
 docs/               hardware, troubleshooting, techniques, card testing, next steps
 ```
 

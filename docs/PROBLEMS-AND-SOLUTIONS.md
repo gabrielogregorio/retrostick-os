@@ -113,7 +113,7 @@ Each entry gives the symptom, the cause and the fix. Log files are described in 
 
 **Wrong button map**
 - Cause: a map deduced by guessing.
-- Fix: press a fixed button sequence on the diagnostics screen, read the log, and update the table in `plat_stick.c`.
+- Fix: press a fixed button sequence on the diagnostics screen, read the log, and update the table in `stick_input.c`.
 
 **Only some buttons work in a game**
 - Cause: the active controller is on the channel the receiver calls player 2.

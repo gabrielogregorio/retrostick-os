@@ -21,6 +21,21 @@ This file is the starting point for any agent. User instructions are in `README.
 
 ---
 
+## 1.1 Priorities
+
+In any change, preserve in this order:
+
+1. the stick stays recoverable: nothing touches the flash or the user's disks
+2. the user's games and saves are never lost
+3. every game of every system keeps working
+4. clarity of the code
+5. test coverage
+6. performance on the ARM11, proven by measuring
+
+In a conflict: safety beats convenience, clarity beats short code. Performance only beats clarity in a hot pixel or audio loop, and the loop says why.
+
+---
+
 ## 2. How to get it working
 
 ### 2.1 PC setup
@@ -89,16 +104,26 @@ The menu **exits** to open a game so the game gets all the RAM and CPU, of which
 
 | File | Role |
 |---|---|
-| `src/main.c` | Menu: system carousel, list with cover and details, favorites, diagnostics, music fade, launching |
+| `src/main.c` | Menu process: startup, input loop, launch sequence |
+| `src/catalog.c` | Systems table, game scan, favorites, display names, `menu-state.txt` |
+| `src/details.c` | Game details and covers from `.meta/`, with a small cache |
+| `src/menu_view.c` | All menu drawing: carousel, static layer, list, diagnostics |
+| `src/menu_audio.c` | Plays music and effects from files, keeps the queue fed, ramps the volume |
 | `src/aero.c`, `src/icons.c` | Aero theme: sky, glass bubbles with the console drawn inside |
 | `src/gfx.c`, `src/font_data.h` | Software drawing: rounded rectangle, gradient, text with alpha. The font is generated at build time |
-| `src/music.c`, `src/chip.c` | 8-bit synthesizer, used **only on the PC** to generate files |
+| `src/music.c`, `src/music_voice.h`, `src/chip.c` | 8-bit synthesizer, used **only on the PC** to generate files |
 | `tools/gen_audio.c` | Generates `retro/audio/` on the PC: music, `sfx-*.pcm` effects, prebuilt background. The stick only reads |
-| `src/runner.c` | Runner: statically linked libretro core, resampling to 48 kHz, rate control, frame skip, saves, pause menu |
+| `src/runner.c` | Game process: libretro environment, video and input callbacks, main loop, frame skip, statistics |
+| `src/runner_audio.c` | Core audio, resampling to 48 kHz, rate control, fade-in |
+| `src/runner_saves.c` | SRAM and save states |
+| `src/runner_pause.c` | Pause menu logic |
 | `src/pause.c` | Draws the pause menu over the game's last frame, darkened |
 | `src/plat.h` | Platform layer: the menu and the runner talk only to it |
-| `src/plat_stick.c` | Stick: `/dev/disp0` + chunkmem, `/dev/ttyS1`, `/dev/dsp`, log |
-| `src/plat_sdl.c` | PC: SDL2 |
+| `src/plat_stick.c` | Stick: init, log, clock, paths, diagnostics |
+| `src/stick_video.c`, `src/stick_frames.c` | Stick video: device setup and menu frames; game frames and retrace pacing |
+| `src/stick_input.c` | Stick controllers: serial parser, presence, simulated keys |
+| `src/stick_audio.c` | Stick audio: OSS output and mixer |
+| `src/plat_sdl.c` | PC: SDL2, scripted input and frame capture for tests and the demo |
 | `src/plat_exec.c` | Writes `launch.txt` and exits (stick) or launches the runner as a process (PC) |
 | `tools/gen_covers.py`, `tools/rdb.py` | Covers and details. Options: `--collection`, `--rdb`, `--preview`, `--download`, `--fixes`. The fixes file is optional, user-owned, defaults to `cache/cover-fixes.json` and is not in the repo. Keys: `description`, `reason`, `cover_name`, `source`, `image`, `year`, `no_cover` |
 | `tools/re/` | Read-only analysis tools |
@@ -120,8 +145,8 @@ The menu **exits** to open a game so the game gets all the RAM and CPU, of which
 
 1. Put the code in `cores/<core>/`.
 2. In the Makefile, add `EMU_<sys> := <core>` and the name to `SYSTEMS`.
-3. Add the system and its `roms/<sys>/` folder to `SYSTEMS` in `src/main.c`.
-4. Add core options to the table in `runner.c`.
+3. Add the system and its `roms/<sys>/` folder to `SYSTEMS` in `src/catalog.c`.
+4. Add core options to the table in `src/runner.c`.
 5. Add the system to `tools/gen_covers.py`.
 
 A prebuilt core from another board does not work. Those in game collections are x86, those for Rockchip boards are ARMv7 hard-float, and the stick is ARMv6 softfp.
@@ -229,5 +254,92 @@ Environment variables are listed in `docs/CARD-TESTING.md`.
 - Run one test at a time on the stick, with a fixed script.
 - Simulated keys in qemu count input reads, not frames, because otherwise they would not advance while the game is paused.
 - Verify the copy to the card with `cmp` before `sync`.
+
+---
+
+## 5. Code style
+
+The C layout is enforced by `.clang-format` and the rest by `tests/python/test_repository_rules.py`. Python has type annotations everywhere and ruff runs with E, F, W, B, I and UP.
+
+- `if`, `for`, `while` and `else` are always blocks with braces, one statement per line.
+- Blank line before `return`, unless it is the first statement of the block.
+- `count += 1`, never `count++`.
+- Early return instead of `else` when it reads better. No nested ternaries: extract a function with early returns.
+- Descriptive names always, in loops and locals too: `system_index`, `button_bit`, `frames_sent`. `x`, `y`, `w`, `h`, `r`, `g`, `b` and `px` are accepted in pixel math only.
+- No magic numbers or arrays: a named constant says what it is.
+- One job per function. Past about 60 lines, split it, except a plain table. `main` reads as a list of steps.
+- State stays `static` inside its file and is reached through functions. A header exposes the minimum.
+- Around 200 to 400 lines per file. The limit is 500: split by responsibility, not by size.
+- Do not include a header only to export it again.
+- Never the em dash character. Use a hyphen.
+- Dynamic text in a message goes between double quotes: `failed to open "%s"`. It exposes stray spaces.
+- Logs explain the operation. Nothing that writes to the card runs inside a frame: a log line goes to the buffer, and `fsync` belongs to startup and to the end of a game.
+- Regex in Python: compiled once at module level, anchored and bounded.
+- Pin the version of everything: `requirements-dev.txt`, actions by commit hash.
+
+### Comments
+
+A comment is the exception, for what the code cannot say: non-obvious behavior, a workaround, a hardware constraint.
+
+- First try a better name, an extracted function or an early return.
+- A good name kills the comment: do not write both. A named constant documents itself.
+- A comment describes the code as it is now, never the path to it. Nothing like "removed", "used to", "before", and never the task that caused the change. Reasons that matter go in the docs.
+- No decorative separators, and no comment block at the top of a test file.
+- No dates, game titles or measurement results in comments. No name of a firmware internal.
+
+---
+
+## 6. Tests
+
+`./run-tests.sh` is the same thing the CI runs: lint, unit and e2e. Nothing opens a window or needs a core or a ROM. The e2e layer runs the real menu and runner on SDL's dummy drivers with `tests/mock/mock_core.c` and invented games from `tests/mock/mock_roms.py`.
+
+Run what the change can break, not everything by reflex:
+
+| Change | Run |
+|---|---|
+| Comment, constant renamed, doc | `.venv/bin/ruff check .`, `.venv/bin/clang-format --dry-run -Werror <file>` |
+| A function in `src/` | `make test-unit PY=.venv/bin/python` |
+| A menu or pause flow, a runner path, a file format | `./run-tests.sh` |
+| `src/plat_stick.c`, `src/stick_*.c`, `card-base/` | `./run-tests.sh`, then `make out/menu-arm` and a real card, see `docs/CARD-TESTING.md` |
+| `src/music.c`, `src/chip.c`, `tools/gen_audio.c` | Generate the audio before and after; the files must stay byte-identical unless the sound is the change |
+
+A test failed? Run that test alone to read the error, not the whole suite again.
+
+What a test must do:
+
+- **Assert the value, not the existence.** `CHECK(system->game_count == 2)`, never only that the list is not empty.
+- **Think of the mutant.** If flipping an `if` or swapping `<` for `<=` breaks no test, the test is decoration. Test the boundary: a controller is present at `PRESENT_TIMEOUT_MS - 1` and gone at `PRESENT_TIMEOUT_MS`.
+- **No magic number.** Use the constant from the code under test.
+- **Cover the error path** and the denied side effect: a load with no save keeps the game running and creates no file.
+- **Behavior, not implementation.** A test breaks only when something observable breaks.
+- **One scenario per test**, named as a sentence, with no `if` or `for` in the body: use `parametrize`.
+- **Do not write a test that cannot fail.** Move a decision to a pure function and test that.
+- **Time comes by parameter.** The serial parser takes `now`, so tests never depend on the real clock.
+- A bug comes with a regression test.
+- A hardware path that no test reaches is checked on a real stick, and the change says so.
+
+---
+
+## 7. CI and release
+
+Workflows live in `.github/workflows/` and run on `dev`, `main` and pull requests into `main`:
+
+| Workflow | What it does |
+|---|---|
+| `tests.yml` | Unit (C with ASan and UBSan, Python), e2e on SDL, ARM menu built with `gcc-arm-linux-gnueabi` and run under qemu |
+| `check-quality.yml` | ruff, clang-format, shellcheck, C without warnings, pinned actions, valid YAML, GIF under 1 MB, no ROM, firmware or core in the repo |
+| `codeql-analysis.yml` | C, Python and the workflows |
+| `auto-complete-fields.yml` | On a pull request: checks that `VERSION` is new, assigns, labels and fills the changelog |
+| `create-tag-and-release.yml` | On merge into `main`: tag `vX.Y.Z` from `VERSION` and a release with the source tarball |
+
+`VERSION` is the single source of the version; `pyproject.toml` follows it. Tags always have the `v` prefix. The CI cross compiler differs from the stick toolchain (glibc against musl), so it proves the build and the menu logic, not the stick binary.
+
+`docs/demo.gif` is recorded by `make demo` from the real menu on invented games. Real titles, covers and ROMs never go into an image.
+
+---
+
+## 8. Documentation
+
+Docs carry instructions and goals, not history: no dates, game counts, benchmark tables or test reports. A change in behavior updates the doc in the same commit: `README.md` for users, `docs/` for details, this file for rules. `docs/NEXT-STEPS.md` lists each planned change with its goal and what must change.
 
 Troubleshooting: `docs/PROBLEMS-AND-SOLUTIONS.md`. Techniques: `docs/OPTIMIZATIONS.md`. Planned changes: `docs/NEXT-STEPS.md`.
