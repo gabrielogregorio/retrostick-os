@@ -4,8 +4,12 @@
 # make smoke-arm -> runs the ARM menu under qemu-arm, headless, and saves out/stick-shot.png
 # make test  -> unit and e2e tests (no emulator core, no ROM, no window)
 # make demo  -> records docs/demo.gif from the menu on mock games
+ARMF := -mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=softfp
 CROSS ?= toolchain/arm-linux-musleabi-cross/bin/arm-linux-musleabi-
-SRC := src/main.c src/gfx.c src/aero.c src/icons.c src/music.c src/plat_exec.c
+MENU_SRC := src/catalog.c src/details.c src/menu_audio.c src/menu_view.c
+SRC := src/main.c $(MENU_SRC) src/gfx.c src/aero.c src/icons.c src/music.c src/plat_exec.c
+STICK_SRC := src/plat_stick.c src/stick_video.c src/stick_frames.c src/stick_input.c src/stick_audio.c
+RUNNER_SRC := src/runner.c src/runner_audio.c src/runner_saves.c src/runner_pause.c src/pause.c src/gfx.c
 FONT := src/font_data.h
 PY ?= python3
 CFLAGS := -O2 -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers
@@ -20,35 +24,36 @@ out/menu-pc: $(SRC) src/plat_sdl.c src/*.h src/font_data.h
 	@mkdir -p out
 	cc $(CFLAGS) $(SRC) src/plat_sdl.c -o $@ $$(sdl2-config --cflags --libs) -lm
 
-out/menu-arm: $(SRC) src/plat_stick.c src/*.h src/font_data.h
+out/menu-arm: $(SRC) $(STICK_SRC) src/*.h src/font_data.h
 	@mkdir -p out
-	$(CROSS)gcc $(CFLAGS) -mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=softfp -static -no-pie -s \
-		$(SRC) src/plat_stick.c -o $@ -lm
+	$(CROSS)gcc $(CFLAGS) $(ARMF) -static -no-pie -s $(SRC) $(STICK_SRC) -o $@ -lm
 
-ARMF := -mcpu=arm1176jzf-s -mfpu=vfp -mfloat-abi=softfp
 LRINC := -Icores/fceumm/src/drivers/libretro/libretro-common/include
 
-# NES = QuickNES (light). FCEUmm stays as nes-fceumm-*, more accurate and heavier
-# (on the stick its emulation does not fit in the 16.6 ms of a frame at 60 Hz).
-out/nes-pc: src/runner.c src/plat_sdl.c src/*.h src/font_data.h out/pc/libquicknes.a
+# compiled as C through the C++ driver because some cores need the C++ runtime at link time
+define link_runner_pc
 	@mkdir -p out/pc
-	c++ -x c $(CFLAGS) $(LRINC) -c src/runner.c -o out/pc/runner.o
-	c++ -x c $(CFLAGS) $$(sdl2-config --cflags) -c src/plat_sdl.c -o out/pc/plat_sdl.o
-	c++ -x c $(CFLAGS) -c src/pause.c -o out/pc/pause.o
-	c++ -x c $(CFLAGS) -c src/gfx.c -o out/pc/gfx.o
-	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/pause.o out/pc/gfx.o out/pc/libquicknes.a -o $@ $$(sdl2-config --libs) -lm
-
-out/nes-arm: src/runner.c src/plat_stick.c src/*.h src/font_data.h out/arm/libquicknes.a
+	set -e; for f in $(RUNNER_SRC) src/plat_sdl.c; do \
+		c++ -x c $(CFLAGS) $(LRINC) $$(sdl2-config --cflags) -c $$f -o out/pc/$$(basename $$f .c).o; done
+	c++ $(RUNNER_SRC:src/%.c=out/pc/%.o) out/pc/plat_sdl.o $(1) -o $@ $$(sdl2-config --libs) -lm -lz
+endef
+define link_runner_arm
 	@mkdir -p out/arm
-	$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c src/runner.c -o out/arm/runner.o
-	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/plat_stick.c -o out/arm/plat_stick.o
-	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/pause.c -o out/arm/pause.o
-	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/gfx.c -o out/arm/gfx.o
-	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/pause.o out/arm/gfx.o out/arm/libquicknes.a -o $@ -lm
+	set -e; for f in $(RUNNER_SRC) $(STICK_SRC); do \
+		$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c $$f -o out/arm/$$(basename $$f .c).o; done
+	$(CROSS)g++ $(ARMF) -static -no-pie -s $(RUNNER_SRC:src/%.c=out/arm/%.o) $(STICK_SRC:src/%.c=out/arm/%.o) $(1) -o $@ -lm
+endef
 
-out/nes-fceumm-arm: src/runner.c src/plat_stick.c src/*.h src/font_data.h out/arm/libfceumm.a
-	$(CROSS)gcc $(CFLAGS) $(LRINC) $(ARMF) -static -no-pie -s \
-		src/runner.c src/plat_stick.c src/pause.c src/gfx.c out/arm/libfceumm.a -o $@ -lm
+# NES = QuickNES (light). FCEUmm stays as nes-fceumm-arm, more accurate and heavier
+# (on the stick its emulation does not fit in the 16.6 ms of a frame at 60 Hz).
+out/nes-pc: $(RUNNER_SRC) src/plat_sdl.c src/*.h src/font_data.h out/pc/libquicknes.a
+	$(call link_runner_pc,out/pc/libquicknes.a)
+
+out/nes-arm: $(RUNNER_SRC) $(STICK_SRC) src/*.h src/font_data.h out/arm/libquicknes.a
+	$(call link_runner_arm,out/arm/libquicknes.a)
+
+out/nes-fceumm-arm: $(RUNNER_SRC) $(STICK_SRC) src/*.h src/font_data.h out/arm/libfceumm.a
+	$(call link_runner_arm,out/arm/libfceumm.a)
 
 out/pc/libquicknes.a:
 	$(MAKE) -f cores/quicknes.mk ARCH=pc -j8
@@ -73,21 +78,11 @@ EMU_ws := wswan
 SYSTEMS := snes md sms gba gb gg a26 ngp ws
 
 .SECONDEXPANSION:
-out/%-arm: src/runner.c src/plat_stick.c src/*.h src/font_data.h out/arm/lib$$(EMU_$$*).a
-	@mkdir -p out/arm
-	$(CROSS)g++ -x c $(CFLAGS) $(LRINC) $(ARMF) -c src/runner.c -o out/arm/runner.o
-	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/plat_stick.c -o out/arm/plat_stick.o
-	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/pause.c -o out/arm/pause.o
-	$(CROSS)g++ -x c $(CFLAGS) $(ARMF) -c src/gfx.c -o out/arm/gfx.o
-	$(CROSS)g++ $(ARMF) -static -no-pie -s out/arm/runner.o out/arm/plat_stick.o out/arm/pause.o out/arm/gfx.o out/arm/lib$(EMU_$*).a -o $@ -lm
+out/%-arm: $(RUNNER_SRC) $(STICK_SRC) src/*.h src/font_data.h out/arm/lib$$(EMU_$$*).a
+	$(call link_runner_arm,out/arm/lib$(EMU_$*).a)
 
-out/%-pc: src/runner.c src/plat_sdl.c src/*.h src/font_data.h out/pc/lib$$(EMU_$$*).a
-	@mkdir -p out/pc
-	c++ -x c $(CFLAGS) $(LRINC) -c src/runner.c -o out/pc/runner.o
-	c++ -x c $(CFLAGS) $$(sdl2-config --cflags) -c src/plat_sdl.c -o out/pc/plat_sdl.o
-	c++ -x c $(CFLAGS) -c src/pause.c -o out/pc/pause.o
-	c++ -x c $(CFLAGS) -c src/gfx.c -o out/pc/gfx.o
-	c++ out/pc/runner.o out/pc/plat_sdl.o out/pc/pause.o out/pc/gfx.o out/pc/lib$(EMU_$*).a -o $@ $$(sdl2-config --libs) -lm -lz
+out/%-pc: $(RUNNER_SRC) src/plat_sdl.c src/*.h src/font_data.h out/pc/lib$$(EMU_$$*).a
+	$(call link_runner_pc,out/pc/lib$(EMU_$*).a)
 
 out/arm/libpicodrive.a:
 	$(MAKE) -f cores/picodrive.mk ARCH=arm
@@ -130,7 +125,7 @@ card: arm audio
 
 # ---------- tests: no emulator core, no ROM, no window ----------
 TESTF := -O1 -g -Wall -Wextra -Wno-unused-parameter -Wno-missing-field-initializers -fsanitize=address,undefined -Isrc
-TEST_MENU := src/gfx.c src/aero.c src/icons.c src/music.c tests/unit/plat_mock.c
+TEST_MENU := $(MENU_SRC) src/gfx.c src/aero.c src/icons.c src/music.c tests/unit/plat_mock.c
 TEST_BINS := out/test/test_gfx out/test/test_menu out/test/test_serial out/test/test_audio
 
 out/test/test_gfx: tests/unit/test_gfx.c src/gfx.c src/*.h $(FONT)
@@ -140,9 +135,9 @@ out/test/test_menu: tests/unit/test_menu.c tests/unit/plat_mock.c src/*.c src/*.
 	@mkdir -p out/test
 	cc $(TESTF) tests/unit/test_menu.c $(TEST_MENU) -o $@ -lm
 # the display structs hold 32-bit pointers on the stick: their size checks only apply to the ARM build
-out/test/test_serial: tests/unit/test_serial.c src/plat_stick.c src/*.h
+out/test/test_serial: tests/unit/test_serial.c $(STICK_SRC) src/*.h
 	@mkdir -p out/test
-	cc $(TESTF) '-D_Static_assert(a,b)=' tests/unit/test_serial.c -o $@ -lm
+	cc $(TESTF) '-D_Static_assert(a,b)=' tests/unit/test_serial.c $(STICK_SRC) -o $@ -lm
 out/test/test_audio: tests/unit/test_audio.c src/chip.c src/music.c src/*.h
 	@mkdir -p out/test
 	cc $(TESTF) tests/unit/test_audio.c src/chip.c src/music.c -o $@ -lm
@@ -152,9 +147,15 @@ SDLL = $$(sdl2-config --libs)
 out/test/menu-sdl: $(SRC) src/plat_sdl.c src/*.h $(FONT)
 	@mkdir -p out/test
 	cc $(CFLAGS) $(SRC) src/plat_sdl.c -o $@ $(SDLC) $(SDLL) -lm
-out/test/nes-pc: src/runner.c src/pause.c src/gfx.c src/plat_sdl.c tests/mock/mock_core.c tests/mock/libretro.h src/*.h $(FONT)
+out/test/nes-pc: $(RUNNER_SRC) src/plat_sdl.c tests/mock/mock_core.c tests/mock/libretro.h src/*.h $(FONT)
 	@mkdir -p out/test
-	cc $(CFLAGS) -Itests/mock src/runner.c src/pause.c src/gfx.c src/plat_sdl.c tests/mock/mock_core.c -o $@ $(SDLC) $(SDLL) -lm
+	cc $(CFLAGS) -Itests/mock $(RUNNER_SRC) src/plat_sdl.c tests/mock/mock_core.c -o $@ $(SDLC) $(SDLL) -lm
+
+WARN := -Wall -Wextra -Werror -Wno-unused-parameter -Wno-missing-field-initializers
+check-warnings: $(FONT)
+	cc -fsyntax-only $(WARN) -Isrc $(SDLC) $(SRC) src/chip.c src/plat_sdl.c tools/gen_audio.c
+	cc -fsyntax-only $(WARN) -Isrc -Itests/mock $(RUNNER_SRC) tests/mock/mock_core.c
+	cc -fsyntax-only $(WARN) '-D_Static_assert(a,b)=' -Isrc $(STICK_SRC)
 
 test-unit: $(TEST_BINS)
 	@set -e; for t in $(TEST_BINS); do ./$$t; done
@@ -169,4 +170,4 @@ test: test-unit test-python test-e2e
 demo: out/test/menu-sdl
 	tools/make_demo_gif.sh
 
-.PHONY: test test-unit test-bins test-e2e test-python demo
+.PHONY: check-warnings test test-unit test-bins test-e2e test-python demo
